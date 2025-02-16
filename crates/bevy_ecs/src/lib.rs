@@ -63,6 +63,7 @@ pub mod storage;
 pub mod system;
 pub mod traversal;
 pub mod world;
+pub mod compile_time_constraints;
 
 pub use bevy_ptr as ptr;
 

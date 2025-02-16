@@ -4,8 +4,10 @@ use crate::{
     query::FilteredAccess,
     storage::Table,
     world::{unsafe_world_cell::UnsafeWorldCell, World},
+    compile_time_constraints::constime
 };
 use variadics_please::all_tuples;
+use crate::compile_time_constraints::constime::WorldQueryInner;
 
 /// Types that can be used as parameters in a [`Query`].
 /// Types that implement this should also implement either [`QueryData`] or [`QueryFilter`]
@@ -39,6 +41,10 @@ use variadics_please::all_tuples;
 /// [`QueryData`]: crate::query::QueryData
 /// [`QueryFilter`]: crate::query::QueryFilter
 pub unsafe trait WorldQuery {
+
+    // TODO: Remove this when we implement it for QueryData
+    const WORLD_QUERY_TREE: constime::WorldQuery = WorldQueryInner::EMPTY;
+
     /// Per archetype/table state retrieved by this [`WorldQuery`] to compute [`Self::Item`](crate::query::QueryData::Item) for each entity.
     type Fetch<'a>: Clone;
 
@@ -161,6 +167,7 @@ macro_rules! impl_tuple_world_query {
             type Fetch<'w> = ($($name::Fetch<'w>,)*);
             type State = ($($name::State,)*);
 
+            const WORLD_QUERY_TREE: constime::WorldQuery = impl_tuple_world_query!(@tree $($name,)*);
 
             fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
                 let ($($name,)*) = fetch;
@@ -216,6 +223,19 @@ macro_rules! impl_tuple_world_query {
                 true $(&& $name::matches_component_set($name, set_contains_id))*
             }
         }
+    };
+
+    // Base case
+    (@tree) => {
+        constime::WorldQueryInner::EMPTY
+    };
+    // Inductive case
+    (@tree $t0:ident, $($rest:ident,)*) => {
+        &constime::WorldQueryInner::And(
+            &constime::WorldQueryInner::Node(
+            $t0::WORLD_QUERY_TREE,
+            <($($rest,)*)>::WORLD_QUERY_TREE)
+        )
     };
 }
 

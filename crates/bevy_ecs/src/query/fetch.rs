@@ -18,6 +18,8 @@ use bevy_ptr::{ThinSlicePtr, UnsafeCellDeref};
 use core::{cell::UnsafeCell, marker::PhantomData, panic::Location};
 use smallvec::SmallVec;
 use variadics_please::all_tuples;
+use bevy_ecs::compile_time_constraints::constime;
+use bevy_ecs::compile_time_constraints::constime::WorldQueryInner;
 
 /// Types that can be fetched from a [`World`] using a [`Query`].
 ///
@@ -336,6 +338,9 @@ unsafe impl WorldQuery for Entity {
     type Fetch<'w> = ();
     type State = ();
 
+    // TODO: Check that this is correct
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Empty;
+
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(_: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {}
 
     unsafe fn init_fetch<'w>(
@@ -406,6 +411,9 @@ unsafe impl ReadOnlyQueryData for Entity {}
 unsafe impl WorldQuery for EntityLocation {
     type Fetch<'w> = &'w Entities;
     type State = ();
+
+    // TODO: Check that this is correct
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Empty;
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
@@ -483,6 +491,8 @@ unsafe impl ReadOnlyQueryData for EntityLocation {}
 unsafe impl<'a> WorldQuery for EntityRef<'a> {
     type Fetch<'w> = UnsafeWorldCell<'w>;
     type State = ();
+
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::EntityRef;
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
@@ -564,6 +574,8 @@ unsafe impl<'a> WorldQuery for EntityMut<'a> {
     type Fetch<'w> = UnsafeWorldCell<'w>;
     type State = ();
 
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::EntityMut;
+
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
     }
@@ -640,6 +652,10 @@ unsafe impl<'a> QueryData for EntityMut<'a> {
 unsafe impl<'a> WorldQuery for FilteredEntityRef<'a> {
     type Fetch<'w> = (UnsafeWorldCell<'w>, Access<ComponentId>);
     type State = FilteredAccess<ComponentId>;
+
+    // TODO: Do this properly, might be fine and we just need to check at runtime
+    // TODO: For dynamic systems
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Empty;
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
@@ -736,6 +752,10 @@ unsafe impl<'a> WorldQuery for FilteredEntityMut<'a> {
     type Fetch<'w> = (UnsafeWorldCell<'w>, Access<ComponentId>);
     type State = FilteredAccess<ComponentId>;
 
+    // TODO: Do this properly, might be fine and we just need to check at runtime
+    // TODO: For dynamic systems
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Empty;
+
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
     }
@@ -830,6 +850,9 @@ where
     B: Bundle,
 {
     type Fetch<'w> = UnsafeWorldCell<'w>;
+
+    // TODO: Actually do this one
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Empty;
     type State = SmallVec<[ComponentId; 4]>;
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
@@ -928,6 +951,8 @@ unsafe impl<'a, B> WorldQuery for EntityMutExcept<'a, B>
 where
     B: Bundle,
 {
+    // TODO: Actually do this one
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Empty;
     type Fetch<'w> = UnsafeWorldCell<'w>;
     type State = SmallVec<[ComponentId; 4]>;
 
@@ -1023,6 +1048,9 @@ where
 unsafe impl WorldQuery for &Archetype {
     type Fetch<'w> = (&'w Entities, &'w Archetypes);
     type State = ();
+
+    // TODO: Check that this is correct
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Archetype;
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
@@ -1122,6 +1150,8 @@ impl<T: Component> Copy for ReadFetch<'_, T> {}
 unsafe impl<T: Component> WorldQuery for &T {
     type Fetch<'w> = ReadFetch<'w, T>;
     type State = ComponentId;
+
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Ref(constime::Id::new(T::UNSTABLE_TYPE_ID));
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
@@ -1294,6 +1324,8 @@ impl<T: Component> Copy for RefFetch<'_, T> {}
 unsafe impl<'__w, T: Component> WorldQuery for Ref<'__w, T> {
     type Fetch<'w> = RefFetch<'w, T>;
     type State = ComponentId;
+
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Ref(constime::Id::new(T::UNSTABLE_TYPE_ID));
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
@@ -1489,6 +1521,8 @@ unsafe impl<'__w, T: Component> WorldQuery for &'__w mut T {
     type Fetch<'w> = WriteFetch<'w, T>;
     type State = ComponentId;
 
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Mut(constime::Id::new(T::UNSTABLE_TYPE_ID));
+
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
     }
@@ -1664,6 +1698,8 @@ unsafe impl<'__w, T: Component> WorldQuery for Mut<'__w, T> {
     type Fetch<'w> = WriteFetch<'w, T>;
     type State = ComponentId;
 
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Mut(constime::Id::new(T::UNSTABLE_TYPE_ID));
+
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
     }
@@ -1781,6 +1817,8 @@ impl<T: WorldQuery> Clone for OptionFetch<'_, T> {
 unsafe impl<T: WorldQuery> WorldQuery for Option<T> {
     type Fetch<'w> = OptionFetch<'w, T>;
     type State = T::State;
+
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Option(T::WORLD_QUERY_TREE);
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         OptionFetch {
@@ -1968,6 +2006,8 @@ impl<T> core::fmt::Debug for Has<T> {
 unsafe impl<T: Component> WorldQuery for Has<T> {
     type Fetch<'w> = bool;
     type State = ComponentId;
+
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Has(constime::Id::new(T::UNSTABLE_TYPE_ID));
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
@@ -2164,6 +2204,8 @@ macro_rules! impl_anytuple_fetch {
             type Fetch<'w> = ($(($name::Fetch<'w>, bool),)*);
             type State = ($($name::State,)*);
 
+            const WORLD_QUERY_TREE: constime::WorldQuery = impl_anytuple_fetch!(@tree $($name,)*);
+
             fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
                 let ($($name,)*) = fetch;
                 ($(
@@ -2272,7 +2314,7 @@ macro_rules! impl_anytuple_fetch {
             type ReadOnly = AnyOf<($($name::ReadOnly,)*)>;
             type Item<'w> = ($(Option<$name::Item<'w>>,)*);
 
-            const COMPONENT_ACCESS_TREE_QUERY_DATA: ConstTree<ComponentAccess> = impl_tuple_query_data!(@tree $($name),*);
+            //const COMPONENT_ACCESS_TREE_QUERY_DATA: ConstTree<ComponentAccess> = &'static ConstTreeInner::<ComponentAccess>::Empty;
 
             fn shrink<'wlong: 'wshort, 'wshort>(item: Self::Item<'wlong>) -> Self::Item<'wshort> {
                 let ($($name,)*) = item;
@@ -2300,31 +2342,19 @@ macro_rules! impl_anytuple_fetch {
         unsafe impl<$($name: ReadOnlyQueryData),*> ReadOnlyQueryData for AnyOf<($($name,)*)> {}
     };
 
-    // Handle empty case
+    // Base case
     (@tree) => {
-        &ConstTreeInner::Empty
+        constime::WorldQueryInner::EMPTY
     };
-    // Handle single item case
-    (@tree $t0:ident) => {
-        $t0::COMPONENT_ACCESS_TREE_QUERY_DATA
-    };
-    // Handle two item case
-    (@tree $t0:ident, $t1:ident) => {
-        &ConstTreeInner::<ComponentAccess>::combine(
-            $t0::COMPONENT_ACCESS_TREE_QUERY_DATA,
-            $t1::COMPONENT_ACCESS_TREE_QUERY_DATA,
+    // Inductive case
+    (@tree $t0:ident, $($rest:ident,)*) => {
+        &constime::WorldQueryInner::AnyOf(
+            &constime::WorldQueryInner::Node(
+            $t0::WORLD_QUERY_TREE,
+            <($($rest,)*)>::WORLD_QUERY_TREE)
         )
     };
-    // Handle three or more items case
-    (@tree $t0:ident, $t1:ident, $($rest:ident),+) => {
-        &ConstTreeInner::<ComponentAccess>::combine(
-            $t0::COMPONENT_ACCESS_TREE_QUERY_DATA,
-            &ConstTreeInner::<ComponentAccess>::combine(
-                $t1::COMPONENT_ACCESS_TREE_QUERY_DATA,
-                impl_anytuple_fetch!(@tree $($rest),+)
-            )
-        )
-    };
+
 }
 
 all_tuples!(
@@ -2355,6 +2385,9 @@ pub(crate) struct NopWorldQuery<D: QueryData>(PhantomData<D>);
 unsafe impl<D: QueryData> WorldQuery for NopWorldQuery<D> {
     type Fetch<'w> = ();
     type State = D::State;
+
+    // TODO: Check that this is correct
+    const WORLD_QUERY_TREE: constime::WorldQuery = WorldQueryInner::EMPTY;
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(_: ()) {}
 
@@ -2425,6 +2458,9 @@ unsafe impl<T: ?Sized> WorldQuery for PhantomData<T> {
     type Fetch<'a> = ();
 
     type State = ();
+
+    //TODO: Check that this is correct
+    const WORLD_QUERY_TREE: constime::WorldQuery = WorldQueryInner::EMPTY;
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(_fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
     }

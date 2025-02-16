@@ -10,6 +10,8 @@ use crate::{
 use bevy_ptr::{ThinSlicePtr, UnsafeCellDeref};
 use core::{cell::UnsafeCell, marker::PhantomData};
 use variadics_please::all_tuples;
+use bevy_ecs::compile_time_constraints::constime;
+use bevy_ecs::compile_time_constraints::constime::WorldQueryInner;
 use bevy_ecs::system::const_param_checking::{AccessType, ComponentAccess};
 
 /// Types that filter the results of a [`Query`].
@@ -161,6 +163,8 @@ unsafe impl<T: Component> WorldQuery for With<T> {
     type Fetch<'w> = ();
     type State = ComponentId;
 
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::With(constime::Id::new(T::UNSTABLE_TYPE_ID));
+
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(_: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {}
 
     #[inline]
@@ -263,6 +267,8 @@ pub struct Without<T>(PhantomData<T>);
 unsafe impl<T: Component> WorldQuery for Without<T> {
     type Fetch<'w> = ();
     type State = ComponentId;
+
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Without(constime::Id::new(T::UNSTABLE_TYPE_ID));
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(_: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {}
 
@@ -407,6 +413,8 @@ macro_rules! impl_or_query_filter {
             type Fetch<'w> = ($(OrFetch<'w, $filter>,)*);
             type State = ($($filter::State,)*);
 
+            const WORLD_QUERY_TREE: constime::WorldQuery = impl_or_query_filter!(@tree $($filter,)*);
+
             fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
                 let ($($filter,)*) = fetch;
                 ($(
@@ -528,6 +536,20 @@ macro_rules! impl_or_query_filter {
             }
         }
     };
+
+    // Base case
+    (@tree) => {
+        constime::WorldQueryInner::EMPTY
+    };
+    // Inductive case
+    (@tree $t0:ident, $($rest:ident,)*) => {
+        &constime::WorldQueryInner::Or(
+            &constime::WorldQueryInner::Node(
+            $t0::WORLD_QUERY_TREE,
+            <($($rest,)*)>::WORLD_QUERY_TREE)
+        )
+    };
+
     // Handle empty case for WITHOUT_FILTER_TREE
     (@without_tree) => {
         &ConstTreeInner::Empty
@@ -781,6 +803,8 @@ unsafe impl<T: Component> WorldQuery for Added<T> {
     type Fetch<'w> = AddedFetch<'w, T>;
     type State = ComponentId;
 
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Added(constime::Id::new(T::UNSTABLE_TYPE_ID));
+
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
     }
@@ -1011,6 +1035,8 @@ impl<T: Component> Clone for ChangedFetch<'_, T> {
 unsafe impl<T: Component> WorldQuery for Changed<T> {
     type Fetch<'w> = ChangedFetch<'w, T>;
     type State = ComponentId;
+
+    const WORLD_QUERY_TREE: constime::WorldQuery = &WorldQueryInner::Changed(constime::Id::new(T::UNSTABLE_TYPE_ID));
 
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         fetch
