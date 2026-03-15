@@ -6,9 +6,15 @@
 //! To demonstrate change detection, there are some console outputs based on changes in
 //! the `EntityCounter` resource and updated Age components
 
+#![expect(
+    clippy::std_instead_of_core,
+    clippy::print_stdout,
+    reason = "Examples should not follow this lint"
+)]
+
 use bevy_ecs::prelude::{async_sync_point, Schedule, World};
 use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_tasks::{AsyncComputeTaskPool, ComputeTaskPool, IoTaskPool, TaskPool, TaskPoolBuilder};
+use bevy_tasks::{AsyncComputeTaskPool, ComputeTaskPool, IoTaskPool, TaskPoolBuilder};
 
 fn main() {
     // Create a world
@@ -19,7 +25,7 @@ fn main() {
     // Add systems to increase the counter and to print out the current value
     schedule.add_systems(
         (async_sync_point::<SyncPoint>, || {
-            bevy_tasks::tick_global_task_pools_on_main_thread()
+            bevy_tasks::tick_global_task_pools_on_main_thread();
         })
             .chain(),
     );
