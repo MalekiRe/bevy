@@ -120,6 +120,7 @@
 //! [`Vec<P>`]: alloc::vec::Vec
 
 mod adapter_system;
+#[cfg(feature = "std")]
 pub(crate) mod async_ecs;
 mod builder;
 mod combinator;
