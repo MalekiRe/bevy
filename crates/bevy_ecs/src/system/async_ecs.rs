@@ -111,14 +111,14 @@ impl WakeRegistry {
             .get_or_create(&(world_id, system_set))
             .pop()
         {
-            ecs_tasks.push(ecs_task.initialize(world))
+            ecs_tasks.push(ecs_task.initialize(world));
         }
         while let Ok(ecs_task) = global_wake_registry
             .1
             .get_or_create(&(world_id, system_set))
             .pop()
         {
-            ecs_tasks.push(ecs_task)
+            ecs_tasks.push(ecs_task);
         }
         let mut need_to_apply_system_state = None;
         GLOBAL_WORLD_ACCESS.set(world, || {
@@ -223,7 +223,7 @@ struct WorldAccessRegistry(OnceLock<RwLock<HashMap<WorldId, Arc<ScopedStatic<Wor
 impl WorldAccessRegistry {
     /// During this `func: FnOnce()` call, calling `get` will access the stored `World`
     #[inline]
-    fn set(&self, world: &mut World, func: impl FnOnce()) -> () {
+    fn set(&self, world: &mut World, func: impl FnOnce()) {
         let this = self.0.get_or_init(|| RwLock::new(HashMap::new()));
         let world_id = world.id();
         if !this.read().unwrap().contains_key(&world_id) {
@@ -232,7 +232,7 @@ impl WorldAccessRegistry {
                 .insert(world_id, Arc::new(ScopedStatic::new()));
         }
         let world_container = this.read().unwrap().get(&world_id).unwrap().clone();
-        world_container.scope(world, func)
+        world_container.scope(world, func);
     }
 
     #[inline]
@@ -242,11 +242,9 @@ impl WorldAccessRegistry {
         func: impl FnOnce(UnsafeWorldCell) -> Poll<T>,
     ) -> Option<Poll<T>> {
         let scoped_static = self.0.get()?.read().unwrap().get(&world_id)?.clone();
-        Some(
-            scoped_static
+        scoped_static
                 .try_with(|world| func(world.as_unsafe_world_cell()))
-                .ok()?,
-        )
+                .ok()
     }
 }
 
@@ -276,7 +274,7 @@ impl<P: SystemParam + 'static> EcsTask<P> {
 }
 
 impl WorldId {
-    /// Creates a new `EcsTask` with `P` SystemParam that can be cloned and re-referenced to
+    /// Creates a new `EcsTask` with `P` `SystemParam` that can be cloned and re-referenced to
     /// persist system parameters like `Changed`, `Added` or `Local`.
     #[inline]
     pub fn ecs_task<P: SystemParam + 'static>(self) -> EcsTask<P> {
