@@ -12,7 +12,7 @@ use bevy::{
     tasks::AsyncComputeTaskPool,
 };
 use futures_timer::Delay;
-use rand::{RngExt};
+use rand::RngExt;
 use std::time::{Duration, Instant};
 
 const NUM_CUBES: i32 = 16;
