@@ -243,8 +243,8 @@ impl WorldAccessRegistry {
     ) -> Option<Poll<T>> {
         let scoped_static = self.0.get()?.read().unwrap().get(&world_id)?.clone();
         scoped_static
-                .try_with(|world| func(world.as_unsafe_world_cell()))
-                .ok()
+            .try_with(|world| func(world.as_unsafe_world_cell()))
+            .ok()
     }
 }
 
