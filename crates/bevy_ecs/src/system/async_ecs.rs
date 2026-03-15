@@ -196,7 +196,12 @@ fn wait_for_async_tasks(ecs_tasks: Vec<ReadyToWake>) -> Vec<NeedToApplySystemSta
         // we re-collect to ensure we fully exhaust the prior iterator
         // we want to have all the wakers call .wake() before the first barrier calls .wait()
         .collect::<Vec<_>>();
-    bevy_tasks::tick_global_task_pools_on_main_thread();
+
+    bevy_tasks::cfg::web! {
+        if {} else {
+            bevy_tasks::tick_global_task_pools_on_main_thread();
+        }
+    }
     ecs_tasks
         .into_iter()
         .map(
@@ -250,9 +255,9 @@ impl WorldAccessRegistry {
 impl<P: SystemParam + 'static> EcsTask<P> {
     /// Allows you to access the ECS from any arbitrary async runtime.
     #[inline]
-    pub async fn run_system<Func, Out, M>(
+    pub async fn run_system<Func, Out, T: 'static>(
         &self,
-        system: impl IntoSystemSet<M>,
+        _sync_point: T,
         ecs_access: Func,
     ) -> core::result::Result<Out, SystemParamValidationError>
     where
@@ -261,7 +266,7 @@ impl<P: SystemParam + 'static> EcsTask<P> {
         PendingEcsCall::<P, Func, Out> {
             phantom_data: Default::default(),
             ecs_func: Some(ecs_access),
-            world_id_schedule: (self.world_id, system.into_system_set().intern()),
+            world_id_schedule: (self.world_id, async_sync_point::<T>.into_system_set().intern()),
             barrier: None,
             system_state_handler: self.system_state_handler.clone(),
         }

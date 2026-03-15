@@ -54,7 +54,7 @@ fn spawn_tasks(world_id: WorldId) {
         let mut timings = vec![];
         for _ in 0..50 {
             let start = Instant::now();
-            task.run_system(async_sync_point::<MySpecialSyncPoint>, |()| {})
+            task.run_system(MySpecialSyncPoint, |()| {})
                 .await
                 .unwrap();
             let end = start.elapsed();
@@ -75,7 +75,7 @@ fn spawn_tasks(world_id: WorldId) {
                 Delay::new(delay).await;
                 let value = task
                     .run_system(
-                        async_sync_point::<MySpecialSyncPoint>,
+                        MySpecialSyncPoint,
                         |(mut local, mut commands, box_mesh, box_material)| {
                             *local += 1;
                             println!("spawning {}", *local);
@@ -95,7 +95,7 @@ fn spawn_tasks(world_id: WorldId) {
                 let mut my_thing = String::new();
                 world_id
                     .ecs_task::<()>()
-                    .run_system(async_sync_point::<MySpecialSyncPoint>, |()| {
+                    .run_system(MySpecialSyncPoint, |()| {
                         my_thing.push('h');
                     })
                     .await.unwrap();

@@ -30,7 +30,7 @@ fn main() {
         .spawn(async move {
             world_id
                 .ecs_task::<()>()
-                .run_system(async_sync_point::<SyncPoint>, |_| {})
+                .run_system(SyncPoint, |_| {})
                 .await.unwrap();
         })
         .detach();
