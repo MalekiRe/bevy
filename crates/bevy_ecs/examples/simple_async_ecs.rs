@@ -6,10 +6,7 @@
 //! To demonstrate change detection, there are some console outputs based on changes in
 //! the `EntityCounter` resource and updated Age components
 
-#![expect(
-    clippy::print_stdout,
-    reason = "Examples should not follow this lint"
-)]
+#![expect(clippy::print_stdout, reason = "Examples should not follow this lint")]
 
 use bevy_ecs::prelude::{async_sync_point, Schedule, World};
 use bevy_ecs::schedule::IntoScheduleConfigs;
