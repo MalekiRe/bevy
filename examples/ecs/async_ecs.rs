@@ -54,7 +54,7 @@ fn spawn_tasks(world_id: WorldId) {
             let end = start.elapsed();
             timings.push(end);
         }
-        timings.sort_by(|a, b| a.cmp(b));
+        timings.sort();
         println!("{:#?}", timings);
     })
     .detach();
