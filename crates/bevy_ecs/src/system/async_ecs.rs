@@ -257,7 +257,7 @@ impl<P: SystemParam + 'static> EcsTask<P> {
         &self,
         _sync_point: T,
         ecs_access: Func,
-    ) -> core::result::Result<Out, SystemParamValidationError>
+    ) -> Result<Out, SystemParamValidationError>
     where
         for<'w, 's> Func: FnOnce(P::Item<'w, 's>) -> Out,
     {
@@ -365,7 +365,7 @@ where
     P: SystemParam + 'static,
     for<'w, 's> Func: FnOnce(P::Item<'w, 's>) -> Out,
 {
-    type Output = core::result::Result<Out, SystemParamValidationError>;
+    type Output = Result<Out, SystemParamValidationError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match GLOBAL_WORLD_ACCESS.get(self.world_id_schedule.0, |world: UnsafeWorldCell| {
