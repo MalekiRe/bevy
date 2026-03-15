@@ -54,7 +54,11 @@ pub fn async_sync_point<Marker: 'static>(world: &mut World) {
     // we limit it here to prevent *unbounded* async calls if we have a loop somewhere
     for _ in 0..100 {
         if GLOBAL_WAKE_REGISTRY.wait(interned, world).is_none() && {
-            bevy_tasks::tick_global_task_pools_on_main_thread();
+            bevy_tasks::cfg::web! {
+                if {} else {
+                    bevy_tasks::tick_global_task_pools_on_main_thread();
+                }
+            }
             GLOBAL_WAKE_REGISTRY.wait(interned, world).is_none()
         } {
             return;
