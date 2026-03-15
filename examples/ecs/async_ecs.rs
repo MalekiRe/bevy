@@ -34,7 +34,7 @@ struct MySpecialSyncPoint;
 
 /// Spawns a grid of async tasks to simulate delayed cube creation.
 ///
-/// Each task sleeps for a random duration, then uses `async_access`
+/// Each task sleeps for a random duration, then uses `ecs_task().run_system()`
 /// to enqueue a closure that runs on the ECS main thread, allowing
 /// mutation of ECS data (e.g., spawning entities and modifying `Local` state).
 ///
@@ -42,21 +42,15 @@ struct MySpecialSyncPoint;
 /// and ECS access happens only inside scheduled closures.
 fn spawn_tasks(world_id: WorldId) {
     let pool = AsyncComputeTaskPool::get();
-    let task = world_id.ecs_task::<(
-        Local<u32>,
-        Commands,
-        Res<BoxMeshHandle>,
-        Res<BoxMaterialHandle>,
-    )>();
+
+    // Benchmarks how long it tasks from queuing onto the async ecs task to
+    // actually getting run
     pool.spawn(async move {
-        println!("I am here!");
         let task = world_id.ecs_task::<()>();
         let mut timings = vec![];
         for _ in 0..50 {
             let start = Instant::now();
-            task.run_system(MySpecialSyncPoint, |()| {})
-                .await
-                .unwrap();
+            task.run_system(MySpecialSyncPoint, |()| {}).await.unwrap();
             let end = start.elapsed();
             timings.push(end);
         }
@@ -64,6 +58,15 @@ fn spawn_tasks(world_id: WorldId) {
         println!("{:#?}", timings);
     })
     .detach();
+
+    // Reuse tasks so you don't have to pay the system init cost every time it runs.
+    let task = world_id.ecs_task::<(
+        Local<u32>,
+        Commands,
+        Res<BoxMeshHandle>,
+        Res<BoxMaterialHandle>,
+    )>();
+
     for x in -NUM_CUBES..NUM_CUBES {
         for z in -NUM_CUBES..NUM_CUBES {
             // Spawn a task on the async compute pool
@@ -87,7 +90,8 @@ fn spawn_tasks(world_id: WorldId) {
                             *local
                         },
                     )
-                    .await.unwrap();
+                    .await
+                    .unwrap();
                 if value as i32 == (NUM_CUBES * 2) * (NUM_CUBES * 2) {
                     println!("DONE");
                 }
@@ -98,9 +102,8 @@ fn spawn_tasks(world_id: WorldId) {
                     .run_system(MySpecialSyncPoint, |()| {
                         my_thing.push('h');
                     })
-                    .await.unwrap();
-                // Benchmarks how long it tasks from queuing onto the async ecs task to
-                // actually getting run
+                    .await
+                    .unwrap();
                 my_thing.push('i');
             })
             .detach();

@@ -31,7 +31,8 @@ fn main() {
             world_id
                 .ecs_task::<()>()
                 .run_system(SyncPoint, |_| {})
-                .await.unwrap();
+                .await
+                .unwrap();
         })
         .detach();
 

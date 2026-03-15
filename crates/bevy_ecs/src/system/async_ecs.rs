@@ -2,7 +2,7 @@ use bevy_ecs::{
     error::ErrorContext,
     prelude::{IntoSystemSet, NonSend, SystemSet},
     schedule::InternedSystemSet,
-    system::{IntoSystem, SystemParam, SystemParamValidationError, SystemState},
+    system::{SystemParam, SystemParamValidationError, SystemState},
     world::{unsafe_world_cell::UnsafeWorldCell, World, WorldId},
 };
 use bevy_platform::{
@@ -18,7 +18,7 @@ use core::{
 };
 use keyed_concurrent_queue::KeyedQueues;
 use scoped_static_storage::ScopedStatic;
-use std::sync::Condvar; // This is what prevents us from being no_std
+use std::sync::Condvar; // This is what prevents us from being no_std currently
 
 #[derive(Clone)]
 struct WakeSignal(Arc<(Mutex<bool>, Condvar)>);
@@ -48,7 +48,7 @@ impl Drop for WakeSignal {
 
 /// Add this system to a schedule and use it as you would normally, then do
 /// `app.add_systems(Update, async_sync_point::<Marker>.after(other_system));`
-/// `world_id.ecs_task().run_system(async_sync_point::<Marker>, || {}).await;`
+/// `world_id.ecs_task().run_system(Marker, || {}).await;`
 pub fn async_sync_point<Marker: 'static>(world: &mut World) {
     let interned = async_sync_point::<Marker>.into_system_set().intern();
     // we limit it here to prevent *unbounded* async calls if we have a loop somewhere
@@ -61,9 +61,6 @@ pub fn async_sync_point<Marker: 'static>(world: &mut World) {
         }
     }
 }
-
-/// Run this function inside your system with the system itself as the second parameter.
-/// This will pump the async ecs tasks and run them if they are ready.
 
 /// This is an abstraction that temporarily and soundly stores the `UnsafeWorldCell` in a static so we can access
 /// it from any async task, runtime, and thread.
@@ -202,6 +199,7 @@ fn wait_for_async_tasks(ecs_tasks: Vec<ReadyToWake>) -> Vec<NeedToApplySystemSta
             bevy_tasks::tick_global_task_pools_on_main_thread();
         }
     }
+
     ecs_tasks
         .into_iter()
         .map(
@@ -219,11 +217,11 @@ fn wait_for_async_tasks(ecs_tasks: Vec<ReadyToWake>) -> Vec<NeedToApplySystemSta
 }
 
 /// This is a very low contention, no contention in the normal execution path, way of storing and
-/// using a `UnsafeWorldCell` from any thread/async task/async runtime.
+/// using a `World` from any thread/async task/async runtime.
 struct WorldAccessRegistry(OnceLock<RwLock<HashMap<WorldId, Arc<ScopedStatic<World>>>>>);
 
 impl WorldAccessRegistry {
-    /// During this `func: FnOnce()` call, calling `get` will access the stored `UnsafeWorldCell`
+    /// During this `func: FnOnce()` call, calling `get` will access the stored `World`
     #[inline]
     fn set(&self, world: &mut World, func: impl FnOnce()) -> () {
         let this = self.0.get_or_init(|| RwLock::new(HashMap::new()));
@@ -266,7 +264,10 @@ impl<P: SystemParam + 'static> EcsTask<P> {
         PendingEcsCall::<P, Func, Out> {
             phantom_data: Default::default(),
             ecs_func: Some(ecs_access),
-            world_id_schedule: (self.world_id, async_sync_point::<T>.into_system_set().intern()),
+            world_id_schedule: (
+                self.world_id,
+                async_sync_point::<T>.into_system_set().intern(),
+            ),
             barrier: None,
             system_state_handler: self.system_state_handler.clone(),
         }
@@ -301,7 +302,8 @@ struct PendingEcsCall<P: SystemParam + 'static, Func, Out> {
     system_state_handler: Arc<dyn SystemStateHandler>,
 }
 
-/// An `EcsTask` can be re-used in order to persist `SystemParams` like `Local`, `Changed`, or `Added`
+/// An `EcsTask` can be re-used in order to persist `SystemParams` like `Local`, `Changed`, or
+/// `Added`
 pub struct EcsTask<P: SystemParam + 'static> {
     phantom_data: PhantomData<P>,
     world_id: WorldId,
@@ -417,10 +419,10 @@ where
         }) {
             Some(Poll::Ready(out)) => Poll::Ready(out),
             _ => {
-                // This must be a static, sadly, because we must always make sure that we can store
+                // This must be a static because we must always make sure that we can store
                 // our pending wakers no matter what. Everything else that we care about can be
                 // stored on the world itself, but this must always be accessible, even if another
-                // `async_access` is currently running.
+                // ecs_task is currently running.
                 let global_wake_registry = GLOBAL_WAKE_REGISTRY
                     .0
                     .get_or_init(|| (KeyedQueues::new(), KeyedQueues::new()));
