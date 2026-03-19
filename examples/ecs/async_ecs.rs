@@ -6,14 +6,9 @@
 //! this example performs ECS world mutations directly *inside* async tasks
 //! by scheduling closures to run on a chosen schedule (e.g., `Update`).
 
-use bevy::{
-    math::ops::{cos, sin},
-    prelude::*,
-    tasks::AsyncComputeTaskPool,
-};
+use bevy::prelude::*;
 use futures_timer::Delay;
 use rand::RngExt;
-use std::time::{Duration, Instant};
 
 const NUM_CUBES: i32 = 16;
 const LIGHT_RADIUS: f32 = 8.0;
@@ -40,84 +35,44 @@ struct MySpecialSyncPoint;
 ///
 /// No polling, task handles, or channels are needed — async work is detached,
 /// and ECS access happens only inside scheduled closures.
-fn spawn_tasks(world_id: WorldId) {
-    let pool = AsyncComputeTaskPool::get();
-
-    // Benchmarks how long it tasks from queuing onto the async ecs task to
-    // actually getting run
-    pool.spawn(async move {
-        let task = world_id.ecs_task::<()>();
-        let mut timings = vec![];
-        for _ in 0..50 {
-            let start = Instant::now();
-            task.run_system(MySpecialSyncPoint, |()| {}).await.unwrap();
-            let end = start.elapsed();
-            timings.push(end);
-        }
-        timings.sort();
-        println!("{:#?}", timings);
-    })
-    .detach();
+fn spawn_tasks(async_ecs: Res<AsyncEcs>) {
+    let pool = bevy::tasks::AsyncComputeTaskPool::get();
 
     // Reuse tasks so you don't have to pay the system init cost every time it runs.
-    let task = world_id.ecs_task::<(
-        Local<u32>,
-        Commands,
-        Res<BoxMeshHandle>,
-        Res<BoxMaterialHandle>,
-    )>();
+    let task = async_ecs.ecs_task::<(Commands, Res<BoxHandle>)>();
 
     for x in -NUM_CUBES..NUM_CUBES {
         for z in -NUM_CUBES..NUM_CUBES {
             // Spawn a task on the async compute pool
             let task = task.clone();
             pool.spawn(async move {
-                let delay = Duration::from_secs_f32(rand::rng().random_range(2.0..8.0));
+                let delay = std::time::Duration::from_secs_f32(rand::rng().random_range(2.0..8.0));
                 // Simulate a delay before task completion
-                println!("delaying for {:?}", delay);
-                Delay::new(delay).await;
-                let value = task
-                    .run_system(
-                        MySpecialSyncPoint,
-                        |(mut local, mut commands, box_mesh, box_material)| {
-                            *local += 1;
-                            println!("spawning {}", *local);
-                            commands.spawn((
-                                Mesh3d(box_mesh.clone()),
-                                MeshMaterial3d(box_material.clone()),
-                                Transform::from_xyz(x as f32, 0.5, z as f32),
-                            ));
-                            *local
-                        },
-                    )
-                    .await
-                    .unwrap();
-                if value as i32 == (NUM_CUBES * 2) * (NUM_CUBES * 2) {
-                    println!("DONE");
-                }
-                // Showcasing how you can mutably access variables from outside the closure
-                let mut my_thing = String::new();
-                world_id
-                    .ecs_task::<()>()
-                    .run_system(MySpecialSyncPoint, |()| {
-                        my_thing.push('h');
-                    })
-                    .await
-                    .unwrap();
-                my_thing.push('i');
+                futures_timer::Delay::new(delay).await;
+                task.run_system(
+                    MySpecialSyncPoint,
+                    |(mut commands, box_handle)| {
+                        commands.spawn((
+                            Mesh3d(box_handle.mesh.clone()),
+                            MeshMaterial3d(box_handle.material.clone()),
+                            Transform::from_xyz(x as f32, 0.5, z as f32),
+                        ));
+                    },
+                )
+                .await
+                .unwrap();
             })
             .detach();
         }
     }
 }
 
-/// Resource holding the mesh handle for the box (used for spawning cubes)
-#[derive(Resource, Deref)]
-struct BoxMeshHandle(Handle<Mesh>);
-
-/// Resource holding the material handle for the box (used for spawning cubes)
-#[derive(Resource, Deref)]
-struct BoxMaterialHandle(Handle<StandardMaterial>);
+/// Resource holding the mesh and material handle for the box (used for spawning cubes)
+#[derive(Resource)]
+struct BoxHandle {
+    mesh: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+}
 
 /// Sets up the shared mesh and material for the cubes.
 fn setup_assets(
@@ -125,13 +80,15 @@ fn setup_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Create and store a cube mesh
-    let box_mesh_handle = meshes.add(Cuboid::new(0.4, 0.4, 0.4));
-    commands.insert_resource(BoxMeshHandle(box_mesh_handle));
-
-    // Create and store a red material
-    let box_material_handle = materials.add(Color::srgb(1.0, 0.2, 0.3));
-    commands.insert_resource(BoxMaterialHandle(box_material_handle));
+    // Create a cube mesh
+    let mesh = meshes.add(Cuboid::new(0.4, 0.4, 0.4));
+    // Create a red material
+    let material = materials.add(Color::srgb(1.0, 0.2, 0.3));
+    // Store the materials
+    commands.insert_resource(BoxHandle {
+        mesh,
+        material,
+    });
 }
 
 /// Sets up the environment by spawning the ground, light, and camera.
@@ -167,8 +124,8 @@ fn setup_env(
 fn rotate_light(mut query: Query<&mut Transform, With<PointLight>>, time: Res<Time>) {
     for mut transform in query.iter_mut() {
         let angle = 1.618 * time.elapsed_secs();
-        let x = LIGHT_RADIUS * cos(angle);
-        let z = LIGHT_RADIUS * sin(angle);
+        let x = LIGHT_RADIUS * bevy::math::ops::cos(angle);
+        let z = LIGHT_RADIUS * bevy::math::ops::sin(angle);
 
         // Update the light's position to rotate around the origin
         transform.translation = Vec3::new(x, LIGHT_RADIUS, z);
