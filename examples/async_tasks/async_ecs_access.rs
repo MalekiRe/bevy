@@ -25,9 +25,8 @@ const NUM_CUBES: i32 = 6;
 const LIGHT_RADIUS: f32 = 8.0;
 
 /// This system generates tasks simulating computationally intensive
-/// work that potentially spans multiple frames/ticks. A separate
-/// system, [`handle_tasks`], will track the spawned tasks on subsequent
-/// frames/ticks, and use the results to spawn cubes.
+/// work that potentially spans multiple frames/ticks. Once these tasks
+/// are complete, they each spawn a cube.
 ///
 /// The task is offloaded to the `AsyncComputeTaskPool`, allowing heavy computation
 /// to be handled asynchronously, without blocking the main game thread.

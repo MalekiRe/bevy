@@ -24,7 +24,7 @@ use core::marker::PhantomData;
 pub struct AsyncSystemHandle<P: SystemParam + 'static> {
     pub(crate) _p: PhantomData<P>,
 
-    /// A `Weak` is used so tasks do not stay alive if the world is dropped.
+    /// A `Weak` is used so tasks fail gracefully if the world is dropped.
     /// If the world goes away, upgrading this weak pointer fails and access
     /// returns [`AsyncAccessError::WorldDropped`].
     pub(crate) bridge: Weak<BridgeState>,
@@ -50,6 +50,13 @@ impl<P: SystemParam + 'static> Clone for AsyncSystemHandle<P> {
 }
 
 impl<P: SystemParam + 'static> AsyncSystemHandle<P> {
+    /// Runs the provided Func(P::Item)->Out callback now if the schedule
+    /// is at the SyncPoint, or queues the callback to be run during the
+    /// SyncPoint in the schedule. See `tick_async_bridge` for adding
+    /// these sync points in the schedule.
+    ///
+    /// If this future is dropped, Func is also dropped and never called.
+    // also, the poll guard within the future is dropped, potentially signaling a waiting driver
     pub async fn run<Func, Out, SyncPoint: 'static>(
         &self,
         _sync_point: SyncPoint,
@@ -78,6 +85,7 @@ impl<P: SystemParam + 'static> AsyncSystemHandle<P> {
     }
 }
 
+/// All the different reasons that [`AsyncSystemHandle::run`] can fail
 #[derive(thiserror::Error, Debug)]
 pub enum AsyncAccessError {
     /// The requested `SystemParam` was invalid in the current world context.
@@ -85,7 +93,7 @@ pub enum AsyncAccessError {
     /// Resource or using `Single` on something that has 0 or multiple instances.
     #[error(transparent)]
     InvalidParam(bevy_ecs::system::SystemParamValidationError),
-    /// The world has been dropped, so we should just return.
+    /// The world has been dropped, so we can't ever access it again.
     #[error("World no longer exists")]
     WorldDropped,
 }
@@ -99,8 +107,8 @@ struct AsyncSystemHandleFut<P: SystemParam + 'static, Func, Out> {
     world_fn: WorldFn<Func, P, Out>,
     /// Poll guard for the currently queued wake cycle, if any.
     ///
-    /// The future drops this at the end of `poll` which acts as acknowledgement that the `poll`
-    /// was called at least once.
+    /// The future drops this at the end of `poll`, which signals the driver that the `poll`
+    /// was called this wake cycle.
     maybe_poll_guard: Option<LatchGuard>,
     /// Weak bridge pointer so the loss of the world becomes a clean runtime error.
     bridge: Weak<BridgeState>,
@@ -132,9 +140,7 @@ where
         // another bridge request is currently using the same system
         // state, we simply yield and let the sync-point driver try again
         // on a later internal tick.
-        let Some(mut system_state) = system_state.try_lock::<P>() else {
-            return None;
-        };
+        let mut system_state = system_state.try_lock::<P>()?;
         if !system_state.meta().is_send() {
             return Some(Err(AsyncAccessError::InvalidParam(
                 bevy_ecs::system::SystemParamValidationError::invalid::<
@@ -157,6 +163,7 @@ where
     }
 }
 
+// none of the fields are self-referential
 impl<P: SystemParam + 'static, Func, Out> Unpin for AsyncSystemHandleFut<P, Func, Out> {}
 
 impl<P, Func, Out> Future for AsyncSystemHandleFut<P, Func, Out>
@@ -192,16 +199,13 @@ where
             .scoped_world
             .try_with(|world| self.world_fn.try_call(world))
             .ok()
+            .flatten()
         {
-            Some(maybe_out) => match maybe_out {
-                // We're done!
-                Some(out) => Poll::Ready(out),
-                // Couldn't lock SystemState, yield and retry
-                None => Poll::Pending,
-            },
+            Some(out) => Poll::Ready(out),
             None => {
-                // No world is currently exposed. That means we are being polled
-                // outside the sync-point drive, so we cannot access ECS yet.
+                // We couldn't acquire all the locks. This means that either the
+                // world is not exposed, or it is exposed and another Fut is using
+                // our SystemParam. Either way, we cannot access ECS yet.
                 //
                 // Instead, enqueue ourselves to be revisited when the matching
                 // sync-point system runs.

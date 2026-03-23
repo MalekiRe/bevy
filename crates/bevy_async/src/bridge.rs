@@ -9,14 +9,14 @@ use bevy_platform::sync::Arc;
 use core::marker::PhantomData;
 
 /// This resource gives one the ability to bridge a connection between an async task and the ecs.
-/// By calling `AsyncBridge::create_handle(&self)` you create a new bridge handle between an async task
+/// By calling [`AsyncBridge::create_handle`] you create a new bridge handle between an async task
 /// and the ecs.
 #[derive(bevy_ecs_macros::Resource, Default, Clone)]
 pub struct AsyncBridge(pub(crate) Arc<BridgeState>);
 
 impl AsyncBridge {
     /// Creates a reusable async handle for accessing the ECS with the
-    /// `SystemParam` type `P`.
+    /// [`SystemParam`](bevy_ecs::system::SystemParam) type `P`.
     ///
     /// This is the entry-point to let an
     /// async task interact with Bevy ECS state.
@@ -25,11 +25,11 @@ impl AsyncBridge {
     /// - is cheap to clone,
     /// - can be moved into async tasks,
     /// - does not access the world immediately,
-    /// [`AsyncSystemHandle<P>`] waits until a matching sync point drives the bridge and
+    /// - waits until a matching sync point drives the bridge and
     ///   temporarily grants safe ECS access.
     ///
-    /// You create one of these from a cloned [`AsyncBridge`] resource and
-    /// then call `.run(...)` inside async code whenever you want to access the ECS.
+    /// You create one of these with the [`AsyncBridge`] resource and
+    /// then call [`.run(...)`](AsyncSystemHandle::run) inside async code whenever you want to access the ECS.
     ///
     /// # Example
     /// ```rust
@@ -85,7 +85,7 @@ pub(crate) struct BridgeState {
 impl BridgeState {
     /// This drives a single sync point, requesting the poll of all tasks in that sync point.
     /// None of the tasks are guaranteed to actually return `Poll::Ready`, but all are guaranteed to
-    /// at least do a `Poll::Pending`
+    /// at least get polled once.
     ///
     /// The flow of logic is the following:
     /// 1. We first drain the queue for our `SyncPoint` into a batch of requests.
@@ -105,9 +105,7 @@ impl BridgeState {
         }
 
         // Make this `World` temporarily visible to our waking futures. Wake them all and wait
-        // until they all have at least *attempted* to poll.
-        // This is contractually obligated by the contract of `.wake()`. We are guaranteed one wake
-        // per call to our `.wake()`.
+        // until they all have called `poll()` at least once.
         let polled_requests = self.scoped_world.scope(world, || {
             let woken_tasks = batch.wake_all();
 
@@ -140,7 +138,7 @@ enum TickResult {
 /// Every queued access request is guaranteed to be *woken*. That wake guarantees the corresponding
 /// async future gets a chance to poll.
 /// It does *not* however guarantee the poll will finish its ECS work, because that
-/// poll may still fail to finish it's work for a *variety* of reasons, i.e. it is unable to acquire
+/// poll may still fail to finish its work for a *variety* of reasons, i.e. it is unable to acquire
 /// the typed `SystemState` lock and returns `Poll::Pending`.
 ///
 /// This function attempts to drive queued work several times, up to
@@ -162,6 +160,9 @@ enum TickResult {
 /// ```
 /// The second reason is spoken of prior. Poll may fail to finish for a variety of reasons and
 /// should be given several chances before quitting.
+///
+/// `SyncPoint` can be any type. Calls to [`AsyncSystemHandle::run`] with the same `SyncPoint`
+/// type will run during this system.
 pub fn tick_async_bridge<SyncPoint: 'static>(world: &mut World) {
     // Derive the stable interned system-set key used to look up requests queued
     // for this exact sync point type.

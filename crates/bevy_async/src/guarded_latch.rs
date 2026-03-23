@@ -68,7 +68,7 @@ mod inner {
 pub(crate) struct LatchGuard(Arc<inner::Inner>);
 
 impl LatchGuard {
-    /// Creates a paired [`LatchWaiter`] and [`LatchGuard`].
+    /// Creates a paired [`LatchWaiter`] and [`LatchGuard`] for one-shot use.
     #[inline]
     pub(crate) fn new_pair() -> (LatchWaiter, Self) {
         let inner = Arc::new(inner::new());
@@ -89,7 +89,7 @@ pub(crate) struct LatchWaiter(Arc<inner::Inner>);
 impl LatchWaiter {
     /// Blocks until the paired [`LatchGuard`] is dropped.
     #[inline]
-    pub(crate) fn wait(&self) {
+    pub(crate) fn wait(self) {
         inner::wait(&self.0);
     }
 }

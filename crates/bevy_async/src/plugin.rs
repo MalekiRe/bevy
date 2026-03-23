@@ -3,8 +3,9 @@ use bevy_app::App;
 
 /// Plugin entry point for the async <-> ECS bridge system.
 ///
-/// This plugin installs a configuration resource telling the bridge how aggressively to drive work
-/// at each sync point.
+/// This plugin installs an [`AsyncBridge`] singleton resource, and a
+/// configuration resource telling the bridge how aggressively to drive work
+/// at each sync point (configured through [`tick_budget`](AsyncPlugin::tick_budget)).
 ///
 /// Conceptually, async tasks cannot directly access Bevy ECS state from arbitrary
 /// threads or arbitrary times. Instead, they enqueue requests which are later

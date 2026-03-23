@@ -53,10 +53,15 @@ impl<P: SystemParam> ErasedSystemStateCell for SystemStateCell<P> {
     }
 
     fn apply(&self, world: &mut World) {
-        // We expect initialization to have already occurred before `apply` is
-        // ever called. So `unwrap()` here reflects an invariant of the bridge.
-        // Completed requests only exist for initialized system states.
-        self.inner.get().unwrap().lock().unwrap().apply(world);
+        self.inner
+            .get()
+            // We expect initialization to have already occurred before `apply` is
+            // ever called. So `unwrap()` here reflects an invariant of the bridge.
+            // Completed requests only exist for initialized system states.
+            .unwrap()
+            .lock()
+            .unwrap()
+            .apply(world);
     }
 }
 
@@ -65,20 +70,19 @@ impl dyn ErasedSystemStateCell {
         &self,
     ) -> Option<MutexGuard<'_, SystemState<P>>> {
         // Recover the concrete typed cell from the erased trait object.
-        //
-        // This `unwrap()` encodes another invariant of the design, it is the case that every
-        // call site must ask for the same `P` that was originally used to create the erased store.
-        // A mismatch here would be a logic bug in the bridge, and should never ever happen.
         (self as &dyn core::any::Any)
             .downcast_ref::<SystemStateCell<P>>()
+            // This `unwrap()` encodes another invariant of the design, it is the case that every
+            // call site must ask for the same `P` that was originally used to create the erased cell.
+            // A mismatch here would be a logic bug in the bridge, and should never ever happen.
             .unwrap()
             .inner
-            .get()?
+            .get()? // fail if not initialized
             // Use `try_lock` rather than blocking:
             // if another request currently owns the typed `SystemState<P>`, the
             // caller should yield with `Poll::Pending` instead of stalling a
-            // thread. We get ticked optimistically many times so it's okay. We aren't guaranteed to
-            // run everytime so we can return Poll::Pending instead of blocking an async task
+            // thread. We get ticked optimistically many times so it's okay. We can simply
+            // requeue if we can't acquire the lock, instead of blocking an async task
             // which would be very bad.
             .try_lock()
             .ok()

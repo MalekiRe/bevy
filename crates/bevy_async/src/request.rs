@@ -9,7 +9,8 @@ pub(crate) struct RequestQueues {
 }
 
 impl RequestQueues {
-    // requires the world to initialize states
+    // Drains all pending requests for the given sync point.
+    // Requires &mut World because each request's SystemState is lazily initialized here if needed.
     pub(crate) fn drain_queue(
         &self,
         sync_point_key: InternedSystemSet,
@@ -42,7 +43,8 @@ impl PendingRequestBatch {
         self.0.is_empty()
     }
 
-    // invariant: you can only call this when the world is published
+    // invariant: you can only call this when the world is visible to futures
+    // invariant: this function does not return until the waker of every pending request has been woken
     pub(crate) fn wake_all(self) -> WokenRequests {
         WokenRequests(
             self.0
@@ -59,7 +61,8 @@ impl PendingRequestBatch {
 pub(crate) struct WokenRequests(bevy_platform::prelude::Vec<WokenRequest>);
 
 impl WokenRequests {
-    // invariant: you can only call this when the world is published
+    // invariant: you can only call this when the world is visible to futures
+    // invariant: this function does not return until the latch for every pending request has been waited for
     pub(crate) fn wait_all(self) -> PolledRequests {
         PolledRequests(
             self.0
@@ -83,6 +86,10 @@ impl PolledRequests {
 }
 
 /// A pending access request bridging an async task into ECS.
+// constructing this type encodes 3 invariants:
+// the waker must be woken exactly once
+// the latch must be waited for after the waker has been woken
+// the system state must be applied back to the world after waiting
 pub(crate) struct PendingRequest {
     /// Waker for the async future that wants ECS access.
     /// When the `SyncPoint` is driven, this waker is fired so the future can
