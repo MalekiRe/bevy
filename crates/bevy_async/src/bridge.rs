@@ -1,5 +1,4 @@
 use crate::plugin::AsyncTickBudget;
-use crate::request;
 use crate::request::RequestQueues;
 use crate::system_state_cell::SystemStateCell;
 use crate::AsyncSystemHandle;
@@ -89,33 +88,40 @@ impl BridgeState {
     /// at least do a `Poll::Pending`
     ///
     /// The flow of logic is the following:
-    /// 1. We first drain the queue for our `SyncPoint`.
-    /// 2. We initialize the request's `SystemState`. (This is idempotent).
+    /// 1. We first drain the queue for our `SyncPoint` into a batch of requests.
+    ///    In the process, we initialize each request's `SystemState`. (This is idempotent).
+    /// 2. If the batch is empty, we return early.
     /// 3. Expose our `World` through `scoped_world`.
     /// 4. Wake all our `AsyncSystemHandleFut`s.
-    /// 5. Apply our `SystemState` back into the `World`. (Things like `Commands`).
+    /// 5. Wait for each Fut to poll at least once.
+    /// 6. Apply the Fut's `SystemState` back into the `World`. (Things like `Commands`).
     fn tick_sync_point(&self, sync_point_key: InternedSystemSet, world: &mut World) -> TickResult {
-        let mut pending_request_batch = bevy_platform::prelude::vec![];
-        while let Ok(pending_request) = self.request_queues.get_or_create(&sync_point_key).pop()
-        {
-            pending_request.system_state.ensure_initialized(world);
-            pending_request_batch.push(pending_request);
-        }
+        let batch = self.request_queues.drain_queue(sync_point_key, world);
+
         // If no requests were waiting then report idle so the caller can decide whether to stop
         // or attempt one more task-pool tick.
-        if pending_request_batch.is_empty() {
+        if batch.is_empty() {
             return TickResult::NoWork;
         }
+
         // Make this `World` temporarily visible to our waking futures. Wake them all and wait
         // until they all have at least *attempted* to poll.
         // This is contractually obligated by the contract of `.wake()`. We are guaranteed one wake
         // per call to our `.wake()`.
         let polled_requests = self.scoped_world.scope(world, || {
-            request::wake_all_and_collect(pending_request_batch)
+            let woken_tasks = batch.wake_all();
+
+            #[cfg(feature = "bevy_tasks")]
+            bevy_tasks::cfg::web! {
+                if {} else {
+                    bevy_tasks::tick_global_task_pools_on_main_thread();
+                }
+            }
+
+            woken_tasks.wait_all()
         });
-        for request in polled_requests {
-            request.apply(world);
-        }
+
+        polled_requests.apply(world);
         TickResult::DidWork
     }
 }

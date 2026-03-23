@@ -61,7 +61,9 @@ impl<P: SystemParam> ErasedSystemStateCell for SystemStateCell<P> {
 }
 
 impl dyn ErasedSystemStateCell {
-    pub(crate) fn try_lock<P: SystemParam + 'static>(&self) -> Option<MutexGuard<'_, SystemState<P>>> {
+    pub(crate) fn try_lock<P: SystemParam + 'static>(
+        &self,
+    ) -> Option<MutexGuard<'_, SystemState<P>>> {
         // Recover the concrete typed cell from the erased trait object.
         //
         // This `unwrap()` encodes another invariant of the design, it is the case that every
