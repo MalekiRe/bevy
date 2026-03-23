@@ -1,5 +1,5 @@
-use crate::ecs_access::EcsAccess;
-use crate::system_state_store::SystemStateStore;
+use crate::ecs_access::AsyncSystemHandle;
+use crate::system_state_store::TypedStateStore;
 use bevy_app::App;
 use bevy_ecs::system::SystemParam;
 use std::marker::PhantomData;
@@ -27,21 +27,21 @@ pub struct AsyncPlugin {
     ///
     /// We may need to do this multiple times because one task's progress can
     /// unblock another task that previously returned `Poll::Pending`.
-    pub max_async_ticks_per_sync_point: usize,
+    pub tick_budget: usize,
 }
 
 impl Default for AsyncPlugin {
     fn default() -> Self {
         Self {
-            max_async_ticks_per_sync_point: 100,
+            tick_budget: 100,
         }
     }
 }
 
 impl bevy_app::Plugin for AsyncPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(MaxAsyncTicksPerSyncPoint(
-            self.max_async_ticks_per_sync_point,
+        app.insert_resource(AsyncTickBudget(
+            self.tick_budget,
         ))
         .init_resource::<AsyncBridge>();
     }
@@ -50,13 +50,13 @@ impl bevy_app::Plugin for AsyncPlugin {
 /// Internal resource to manage a limit on how many times we try to drive the async <-> ecs bridge
 /// per sync point.
 #[derive(bevy_ecs_macros::Resource, Clone)]
-pub(crate) struct MaxAsyncTicksPerSyncPoint(pub(crate) usize);
+pub(crate) struct AsyncTickBudget(pub(crate) usize);
 
-/// This resource gives one the ability to create a bridge between an async task and the ecs.
-/// By calling `AsyncBridge::new(&self)` you create a new bridge between an async task
+/// This resource gives one the ability to bridge a connection between an async task and the ecs.
+/// By calling `AsyncBridge::create_handle(&self)` you create a new bridge handle between an async task
 /// and the ecs.
 #[derive(bevy_ecs_macros::Resource, Default, Clone)]
-pub struct AsyncBridge(pub(crate) Arc<crate::async_bridge::AsyncBridgeInner>);
+pub struct AsyncBridge(pub(crate) Arc<crate::async_bridge::BridgeState>);
 
 impl AsyncBridge {
     /// Creates a reusable async handle for accessing the ECS with the
@@ -65,15 +65,15 @@ impl AsyncBridge {
     /// This is the entry-point to let an
     /// async task interact with Bevy ECS state.
     ///
-    /// The returned [`EcsAccess<P>`]:
+    /// The returned [`AsyncSystemHandle<P>`]:
     /// - is cheap to clone,
     /// - can be moved into async tasks,
     /// - does not access the world immediately,
-    /// [`EcsAccess<P>`] waits until a matching sync point drives the bridge and
+    /// [`AsyncSystemHandle<P>`] waits until a matching sync point drives the bridge and
     ///   temporarily grants safe ECS access.
     ///
     /// You create one of these from a cloned [`AsyncBridge`] resource and
-    /// then call `.access(...)` inside async code whenever you want to access the ECS.
+    /// then call `.run(...)` inside async code whenever you want to access the ECS.
     ///
     /// # Example
     /// ```rust
@@ -91,12 +91,12 @@ impl AsyncBridge {
     /// fn main() {
     ///   let mut app = App::new();
     ///   app.add_plugins((AsyncPlugin::default(), ScheduleRunnerPlugin::default(), TaskPoolPlugin::default()));
-    ///   app.add_systems(Update, drive_async_bridge::<MySyncPoint>);
+    ///   app.add_systems(Update, tick_async_bridge::<MySyncPoint>);
     ///   app.add_systems(Startup, move |bridge: Res<AsyncBridge>| {
     ///       let bridge = bridge.clone();
     ///       AsyncComputeTaskPool::get().spawn(async move {
-    ///           let ecs_access = bridge.new::<Commands>();
-    ///           ecs_access.access(MySyncPoint, |mut commands: Commands| {
+    ///           let bridge_handle = bridge.create_handle::<Commands>();
+    ///           bridge_handle.run(MySyncPoint, |mut commands: Commands| {
     ///               commands.spawn_empty();
     ///               ACCESS_RAN.store(true, Ordering::Relaxed);
     ///           }).await.unwrap();
@@ -111,11 +111,11 @@ impl AsyncBridge {
     ///
     /// `P` is stored lazily, meaning the underlying `SystemState<P>` is only
     /// initialized when the bridge is first driven against a real `World`.
-    pub fn new<P: SystemParam + 'static>(&self) -> EcsAccess<P> {
-        EcsAccess {
-            phantom_data: PhantomData::default(),
+    pub fn create_handle<P: SystemParam + 'static>(&self) -> AsyncSystemHandle<P> {
+        AsyncSystemHandle {
+            _p: PhantomData::default(),
             bridge: Arc::downgrade(&self.0),
-            system_state: Arc::new(SystemStateStore::<P>::default()),
+            system_state: Arc::new(TypedStateStore::<P>::default()),
         }
     }
 }

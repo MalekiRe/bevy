@@ -5,7 +5,7 @@
 //! Unlike the channel-based approach (where tasks send results directly via a communication
 //! channel) or the direct approach in async_compute, this example uses the ecs <-> async bridge.
 
-use bevy::async_bridge::prelude::{drive_async_bridge, AsyncBridge};
+use bevy::async_bridge::prelude::{tick_async_bridge, AsyncBridge};
 use bevy::{prelude::*, tasks::AsyncComputeTaskPool};
 use rand::RngExt;
 
@@ -15,7 +15,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_systems(Startup, setup)
-        .add_systems(Update, (drive_async_bridge::<MySyncPoint>, rotate_light))
+        .add_systems(Update, (tick_async_bridge::<MySyncPoint>, rotate_light))
         .run();
 }
 
@@ -32,10 +32,10 @@ const LIGHT_RADIUS: f32 = 8.0;
 /// The task is offloaded to the `AsyncComputeTaskPool`, allowing heavy computation
 /// to be handled asynchronously, without blocking the main game thread.
 fn setup(
-    mut commands: Commands,
-    bridge: Res<AsyncBridge>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+	mut commands: Commands,
+	bridge: Res<AsyncBridge>,
+	mut meshes: ResMut<Assets<Mesh>>,
+	mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((
         Mesh3d(meshes.add(Circle::new(1.618 * NUM_CUBES as f32))),
@@ -61,7 +61,7 @@ fn setup(
     let pool = bevy::tasks::AsyncComputeTaskPool::get();
 
     // Reuse tasks so you don't have to pay the system init cost every time it runs.
-    let task = bridge.new::<(
+    let task = bridge.create_handle::<(
         Commands,
         Local<Option<Handle<Mesh>>>,
         Local<Option<Handle<StandardMaterial>>>,
@@ -76,7 +76,7 @@ fn setup(
                 let delay = std::time::Duration::from_secs_f32(rand::rng().random_range(2.0..8.0));
                 // Simulate a delay before task completion
                 futures_timer::Delay::new(delay).await;
-                task.access(
+                task.run(
                     MySyncPoint,
                     |(mut commands, mut box_mesh, mut box_material, mut meshes, mut materials)| {
                         if box_mesh.is_none() {
