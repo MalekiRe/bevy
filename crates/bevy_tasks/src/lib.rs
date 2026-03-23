@@ -10,7 +10,7 @@
 pub mod cfg {
     pub(crate) use bevy_platform::cfg::*;
 
-    pub use bevy_platform::cfg::{alloc, std, web};
+    pub use bevy_platform::cfg::{alloc, std, web, conditional_send};
 
     define_alias! {
         #[cfg(feature = "async_executor")] => {
@@ -22,12 +22,6 @@ pub mod cfg {
             /// Indicates multithreading support.
             multi_threaded
         }
-
-        #[cfg(target_arch = "wasm32")] => {
-            /// Indicates the current target requires additional `Send` bounds.
-            conditional_send
-        }
-
     }
 }
 
@@ -37,19 +31,7 @@ cfg::std! {
 
 extern crate alloc;
 
-cfg::conditional_send! {
-    if {
-        /// Use [`ConditionalSend`] to mark an optional Send trait bound. Useful as on certain platforms (eg. Wasm),
-        /// futures aren't Send.
-        pub trait ConditionalSend {}
-        impl<T> ConditionalSend for T {}
-    } else {
-        /// Use [`ConditionalSend`] to mark an optional Send trait bound. Useful as on certain platforms (eg. Wasm),
-        /// futures aren't Send.
-        pub trait ConditionalSend: Send {}
-        impl<T: Send> ConditionalSend for T {}
-    }
-}
+pub use bevy_platform::sync::ConditionalSend;
 
 /// Use [`ConditionalSendFuture`] for a future with an optional Send trait bound, as on certain platforms (eg. Wasm),
 /// futures aren't Send.

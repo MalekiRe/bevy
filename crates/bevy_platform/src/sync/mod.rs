@@ -26,6 +26,20 @@ crate::cfg::alloc! {
     }
 }
 
+crate::cfg::conditional_send! {
+    if {
+        /// Use [`ConditionalSend`] to mark an optional Send trait bound. Useful as on certain platforms (eg. Wasm),
+        /// futures aren't Send.
+        pub trait ConditionalSend {}
+        impl<T> ConditionalSend for T {}
+    } else {
+        /// Use [`ConditionalSend`] to mark an optional Send trait bound. Useful as on certain platforms (eg. Wasm),
+        /// futures aren't Send.
+        pub trait ConditionalSend: Send {}
+        impl<T: Send> ConditionalSend for T {}
+    }
+}
+
 pub mod atomic;
 
 mod barrier;

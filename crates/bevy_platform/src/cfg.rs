@@ -261,4 +261,8 @@ define_alias! {
         /// Indicates `critical-section` is available.
         critical_section
     }
+    #[cfg(target_arch = "wasm32")] => {
+        /// Indicates the current target requires additional `Send` bounds.
+        conditional_send
+    }
 }
