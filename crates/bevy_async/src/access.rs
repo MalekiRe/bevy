@@ -1,7 +1,8 @@
-use crate::async_bridge;
-use crate::async_bridge::{BridgeState, PendingRequest};
-use crate::system_state_store::ErasedStateStore;
+use crate::bridge;
+use crate::bridge::BridgeState;
 use crate::poll_signal::PollSignal;
+use crate::request::PendingRequest;
+use crate::system_state_store::ErasedStateStore;
 use bevy_ecs::schedule::{InternedSystemSet, IntoSystemSet, SystemSet};
 use bevy_ecs::system::SystemParam;
 use bevy_platform::sync::{Arc, Weak};
@@ -58,7 +59,7 @@ impl<P: SystemParam + 'static> AsyncSystemHandle<P> {
     {
         AsyncSystemHandleFut {
             _p: PhantomData::default(),
-            sync_point_key: async_bridge::tick_async_bridge::<SyncPoint>
+            sync_point_key: bridge::tick_async_bridge::<SyncPoint>
                 .into_system_set()
                 .intern(),
             world_fn: Some(world_fn),

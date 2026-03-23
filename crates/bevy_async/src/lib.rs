@@ -9,18 +9,20 @@
 #[cfg(feature = "std")]
 extern crate std;
 
-mod async_bridge;
-mod ecs_access;
+mod access;
+mod bridge;
 mod plugin;
-mod system_state_store;
 mod poll_signal;
+mod request;
+mod system_state_store;
 
+pub use crate::access::{AsyncAccessError, AsyncSystemHandle};
+pub use crate::bridge::{tick_async_bridge, AsyncBridge};
 pub use crate::plugin::AsyncPlugin;
 
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::{
-		async_bridge::tick_async_bridge,
-		plugin::{AsyncBridge, AsyncPlugin},
+        tick_async_bridge, AsyncAccessError, AsyncBridge, AsyncPlugin, AsyncSystemHandle,
     };
 }

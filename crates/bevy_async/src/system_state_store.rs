@@ -26,7 +26,7 @@ impl<P: SystemParam + 'static> Default for TypedStateStore<P> {
         // first driven on the world-owning thread with access to `&mut World`.
         Self {
             inner: Mutex::new(None),
-            ready: AtomicBool::new(false)
+            ready: AtomicBool::new(false),
         }
     }
 }
@@ -84,7 +84,8 @@ impl<P: SystemParam> ErasedStateStore for TypedStateStore<P> {
         // If the atomic bool *says* it's loaded then we know for sure it is.
         // Otherwise we have to conservatively assume it's not initialized.
         // This is okay because our initialization logic is idempotent.
-        self.ready.load(bevy_platform::sync::atomic::Ordering::Acquire)
+        self.ready
+            .load(bevy_platform::sync::atomic::Ordering::Acquire)
     }
 }
 

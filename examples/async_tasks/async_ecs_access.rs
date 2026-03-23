@@ -32,10 +32,10 @@ const LIGHT_RADIUS: f32 = 8.0;
 /// The task is offloaded to the `AsyncComputeTaskPool`, allowing heavy computation
 /// to be handled asynchronously, without blocking the main game thread.
 fn setup(
-	mut commands: Commands,
-	bridge: Res<AsyncBridge>,
-	mut meshes: ResMut<Assets<Mesh>>,
-	mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+    bridge: Res<AsyncBridge>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((
         Mesh3d(meshes.add(Circle::new(1.618 * NUM_CUBES as f32))),
