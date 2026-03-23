@@ -3,6 +3,7 @@ use crate::bridge::BridgeState;
 use crate::guarded_latch::LatchGuard;
 use crate::request::PendingRequest;
 use crate::system_state_cell::ErasedSystemStateCell;
+use bevy_ecs::prelude::World;
 use bevy_ecs::schedule::{InternedSystemSet, IntoSystemSet, SystemSet};
 use bevy_ecs::system::SystemParam;
 use bevy_platform::sync::{Arc, Weak};
@@ -49,22 +50,28 @@ impl<P: SystemParam + 'static> Clone for AsyncSystemHandle<P> {
 }
 
 impl<P: SystemParam + 'static> AsyncSystemHandle<P> {
-    pub async fn run<WorldFn, Out, SyncPoint: 'static>(
+    pub async fn run<Func, Out, SyncPoint: 'static>(
         &self,
         _sync_point: SyncPoint,
-        world_fn: WorldFn,
+        world_fn: Func,
     ) -> Result<Out, AsyncAccessError>
     where
-        for<'w, 's> WorldFn: FnOnce(P::Item<'w, 's>) -> Out,
+        for<'w, 's> Func: FnOnce(P::Item<'w, 's>) -> Out,
     {
-        AsyncSystemHandleFut {
+        let sync_point_key = bridge::tick_async_bridge::<SyncPoint>
+            .into_system_set()
+            .intern();
+
+        let world_fn = WorldFn {
             _p: PhantomData::default(),
-            sync_point_key: bridge::tick_async_bridge::<SyncPoint>
-                .into_system_set()
-                .intern(),
-            world_fn: Some(world_fn),
-            maybe_poll_guard: None,
+            func: Some(world_fn),
             system_state: self.system_state.clone(),
+        };
+
+        AsyncSystemHandleFut {
+            sync_point_key,
+            world_fn,
+            maybe_poll_guard: None,
             bridge: self.bridge.clone(),
         }
         .await
@@ -85,22 +92,69 @@ pub enum AsyncAccessError {
 
 /// Future representing a single in-flight ECS access request.
 struct AsyncSystemHandleFut<P: SystemParam + 'static, Func, Out> {
-    _p: PhantomData<(P, Func, Out)>,
     /// Interned system-set key identifying which sync-point queue this future
     /// should be sent to.
     sync_point_key: InternedSystemSet,
     /// This is the pseudo-system that we try to run when we have access to `World`.
-    /// This is an option just so we can take it out when we run it so we can use `FnOnce`
-    /// instead of `FnMut`, so it's more flexible than real systems.
-    world_fn: Option<Func>,
+    world_fn: WorldFn<Func, P, Out>,
     /// Poll guard for the currently queued wake cycle, if any.
     ///
     /// The future drops this at the end of `poll` which acts as acknowledgement that the `poll`
     /// was called at least once.
     maybe_poll_guard: Option<LatchGuard>,
-    system_state: Arc<dyn ErasedSystemStateCell>,
     /// Weak bridge pointer so the loss of the world becomes a clean runtime error.
     bridge: Weak<BridgeState>,
+}
+
+// bundles Func, SystemParam, and Out all together
+struct WorldFn<Func, P, Out> {
+    _p: PhantomData<(P, Out)>,
+    /// This is an option just so we can take it out when we run it so we can use `FnOnce`
+    /// instead of `FnMut`, so it's more flexible than real systems.
+    func: Option<Func>,
+    system_state: Arc<dyn ErasedSystemStateCell>,
+}
+
+impl<Func, P, Out> WorldFn<Func, P, Out>
+where
+    P: SystemParam + 'static,
+    for<'w, 's> Func: FnOnce(P::Item<'w, 's>) -> Out,
+{
+    // this function attempts to acquire the SystemState lock and execute the inner function:
+    // if it can't acquire the lock, it returns None
+    // if it can acquire the lock but the inner system_state can't validate, it returns Some(Err)
+    // if it can acquire the lock, it calls the inner Func and returns Out. `try_call` should never be called again
+    fn try_call(&mut self, world: &mut World) -> Option<Result<Out, AsyncAccessError>> {
+        let system_state = self.system_state.clone();
+        // Attempt to acquire the typed `SystemState<P>`.
+        //
+        // We deliberately use `try_lock` rather than blocking. If
+        // another bridge request is currently using the same system
+        // state, we simply yield and let the sync-point driver try again
+        // on a later internal tick.
+        let Some(mut system_state) = system_state.try_lock::<P>() else {
+            return None;
+        };
+        if !system_state.meta().is_send() {
+            return Some(Err(AsyncAccessError::InvalidParam(
+                bevy_ecs::system::SystemParamValidationError::invalid::<
+                    bevy_ecs::prelude::NonSend<()>,
+                >("Cannot have your system be non-send / exclusive"),
+            )));
+        }
+        let state = match system_state.get_mut(world) {
+            Ok(state) => state,
+            Err(system_param_validation_error) => {
+                return Some(Err(AsyncAccessError::InvalidParam(
+                    system_param_validation_error,
+                )))
+            }
+        };
+        // We finally have `P::Item<'w, 's>`, yay!, so consume the stored `FnOnce`, run it,
+        // and complete the future.
+        // This unwrap represents an invariant: try_call can't be called again after it returns Some(Ok).
+        Some(Ok(self.func.take().unwrap()(state)))
+    }
 }
 
 impl<P: SystemParam + 'static, Func, Out> Unpin for AsyncSystemHandleFut<P, Func, Out> {}
@@ -136,39 +190,15 @@ where
         };
         match bridge
             .scoped_world
-            .try_with(|world| {
-                let system_state = self.system_state.clone();
-                // Attempt to acquire the typed `SystemState<P>`.
-                //
-                // We deliberately use `try_lock` rather than blocking. If
-                // another bridge request is currently using the same system
-                // state, we simply yield and let the sync-point driver try again
-                // on a later internal tick.
-                let Some(mut system_state) = system_state.try_lock::<P>() else {
-                    return Poll::Pending;
-                };
-                if !system_state.meta().is_send() {
-                    return Poll::Ready(Err(AsyncAccessError::InvalidParam(
-                        bevy_ecs::system::SystemParamValidationError::invalid::<
-                            bevy_ecs::prelude::NonSend<()>,
-                        >("Cannot have your system be non-send / exclusive"),
-                    )));
-                }
-                let state = match system_state.get_mut(world) {
-                    Ok(state) => state,
-                    Err(system_param_validation_error) => {
-                        return Poll::Ready(Err(AsyncAccessError::InvalidParam(
-                            system_param_validation_error,
-                        )))
-                    }
-                };
-                // We finally have `P::Item<'w, 's>`, yay!, so consume the stored `FnOnce`, run it,
-                // and complete the future.
-                Poll::Ready(Ok(self.world_fn.take().unwrap()(state)))
-            })
+            .try_with(|world| self.world_fn.try_call(world))
             .ok()
         {
-            Some(out) => out,
+            Some(maybe_out) => match maybe_out {
+                // We're done!
+                Some(out) => Poll::Ready(out),
+                // Couldn't lock SystemState, yield and retry
+                None => Poll::Pending,
+            },
             None => {
                 // No world is currently exposed. That means we are being polled
                 // outside the sync-point drive, so we cannot access ECS yet.
@@ -192,7 +222,7 @@ where
                     PendingRequest {
                         waker: cx.waker().clone(),
                         latch,
-                        system_state: self.system_state.clone(),
+                        system_state: self.world_fn.system_state.clone(),
                     },
                 ) {
                     Ok(_) => Poll::Pending,
