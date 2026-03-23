@@ -1,8 +1,8 @@
-use crate::access::AsyncSystemHandle;
+use crate::AsyncSystemHandle;
 use crate::plugin::AsyncTickBudget;
 use crate::request;
 use crate::request::RequestQueues;
-use crate::system_state_store::{ErasedStateStore, TypedStateStore};
+use crate::system_state_store::TypedStateStore;
 use bevy_ecs::prelude::{IntoSystemSet, SystemSet, World};
 use bevy_ecs::schedule::InternedSystemSet;
 use bevy_ecs::system::SystemParam;

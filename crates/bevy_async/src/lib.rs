@@ -12,7 +12,7 @@ extern crate std;
 mod access;
 mod bridge;
 mod plugin;
-mod poll_signal;
+mod guarded_latch;
 mod request;
 mod system_state_store;
 

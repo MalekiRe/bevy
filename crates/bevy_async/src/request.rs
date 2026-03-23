@@ -14,7 +14,7 @@ pub(crate) struct PendingRequest {
     pub(crate) waker: core::task::Waker,
     /// Our custom primitive that lets us wait until all the futures have tried to run before
     /// continuing.
-    pub(crate) poll_signal: crate::poll_signal::PollSignal,
+    pub(crate) latch: crate::guarded_latch::LatchWaiter,
     pub(crate) already_ready: bool,
     pub(crate) system_state: Arc<dyn ErasedStateStore>,
 }
@@ -33,7 +33,7 @@ impl PendingRequest {
 
 /// A request whose waker has already been fired.
 struct WokenRequest {
-    poll_signal: crate::poll_signal::PollSignal,
+    latch: crate::guarded_latch::LatchWaiter,
     system_state: Arc<dyn ErasedStateStore>,
 }
 
@@ -59,7 +59,7 @@ pub fn wake_all_and_collect(
             |PendingRequest {
                  system_state,
                  waker,
-                 poll_signal,
+                 latch,
                  ..
              }| {
                 // Trigger the async future so it can poll while `scoped_world`
@@ -67,12 +67,12 @@ pub fn wake_all_and_collect(
                 waker.wake();
                 WokenRequest {
                     system_state,
-                    poll_signal,
+                    latch,
                 }
             },
         )
         // we re-collect to ensure we fully exhaust the prior iterator
-        // we want to have all the wakers call .wake() before waiting on the first signal
+        // we want to have all the wakers call .wake() before waiting on the first latch
         .collect::<bevy_platform::prelude::Vec<_>>();
 
     #[cfg(feature = "bevy_tasks")]
@@ -87,9 +87,9 @@ pub fn wake_all_and_collect(
         .map(
             |WokenRequest {
                  system_state,
-                 poll_signal,
+                 latch,
              }| {
-                poll_signal.wait();
+                latch.wait();
                 PolledRequest { system_state }
             },
         )

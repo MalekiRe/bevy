@@ -1,6 +1,6 @@
 use crate::bridge;
 use crate::bridge::BridgeState;
-use crate::poll_signal::PollSignal;
+use crate::guarded_latch::LatchGuard;
 use crate::request::PendingRequest;
 use crate::system_state_store::ErasedStateStore;
 use bevy_ecs::schedule::{InternedSystemSet, IntoSystemSet, SystemSet};
@@ -63,7 +63,7 @@ impl<P: SystemParam + 'static> AsyncSystemHandle<P> {
                 .into_system_set()
                 .intern(),
             world_fn: Some(world_fn),
-            poll_signal: None,
+            maybe_poll_guard: None,
             system_state: self.system_state.clone(),
             bridge: self.bridge.clone(),
         }
@@ -93,11 +93,11 @@ struct AsyncSystemHandleFut<P: SystemParam + 'static, Func, Out> {
     /// This is an option just so we can take it out when we run it so we can use `FnOnce`
     /// instead of `FnMut`, so it's more flexible than real systems.
     world_fn: Option<Func>,
-    /// Poll signal for the currently queued wake cycle, if any.
+    /// Poll guard for the currently queued wake cycle, if any.
     ///
-    /// The future drops this at the end of `poll` which acts as acknowledgement that the wake
-    /// has been handled.
-    poll_signal: Option<PollSignal>,
+    /// The future drops this at the end of `poll` which acts as acknowledgement that the `poll`
+    /// was called at least once.
+    maybe_poll_guard: Option<LatchGuard>,
     system_state: Arc<dyn ErasedStateStore>,
     /// Weak bridge pointer so the loss of the world becomes a clean runtime error.
     bridge: Weak<BridgeState>,
@@ -119,12 +119,12 @@ where
         use core::task::Poll;
 
         // If we were previously woken by the sync-point driver, we will have a
-        // `PollSignal` stored here.
+        // `LatchGuard` stored here.
         //
-        // Dropping that signal at the end of this poll acts as the
+        // Dropping that guard at the end of this poll acts as the
         // acknowledgement that yes, this wake was observed and this task has
         // attempted its run, you may release the waiting on the other side.
-        let _signal_guard = self.poll_signal.take();
+        let _maybe_poll_guard = self.maybe_poll_guard.take();
 
         // Try to gain a strong reference to the bridge. If this fails, the world is gone,
         // so further access is impossible.
@@ -183,15 +183,15 @@ where
                 //
                 // Instead, enqueue ourselves to be revisited when the matching
                 // sync-point system runs.
-                let poll_signal = PollSignal::new();
-                // Store one clone locally so dropping it at the end of the next
-                // poll acknowledges the wake.
-                self.poll_signal.replace(poll_signal.clone());
+                let (latch, guard) = LatchGuard::new_pair();
+                // Store the guard so it is dropped at the end of the next poll,
+                // unblocking the driver's latch.
+                self.maybe_poll_guard.replace(guard);
                 // Queue the request under this future's target sync point.
                 //
                 // The queued payload carries the following!
                 // 1. The task's waker, so the sync-point driver can wake it.
-                // 2. The poll handshake signal, so the driver can wait until the wake has actually
+                // 2. The poll handshake latch, so the driver can wait until the wake has actually
                 // been processed.
                 // 3. An initialization hint for the typed `SystemState`.
                 // 4. The erased `SystemState` storage itself.
@@ -201,7 +201,7 @@ where
                         &self.sync_point_key,
                         PendingRequest {
                             waker: cx.waker().clone(),
-                            poll_signal,
+                            latch,
                             already_ready: self.system_state.is_initialized(),
                             system_state: self.system_state.clone(),
                         },
