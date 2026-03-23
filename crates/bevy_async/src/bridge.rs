@@ -1,8 +1,8 @@
-use crate::AsyncSystemHandle;
 use crate::plugin::AsyncTickBudget;
 use crate::request;
 use crate::request::RequestQueues;
-use crate::system_state_store::TypedStateStore;
+use crate::system_state_cell::SystemStateCell;
+use crate::AsyncSystemHandle;
 use bevy_ecs::prelude::{IntoSystemSet, SystemSet, World};
 use bevy_ecs::schedule::InternedSystemSet;
 use bevy_ecs::system::SystemParam;
@@ -72,7 +72,7 @@ impl AsyncBridge {
         AsyncSystemHandle {
             _p: PhantomData::default(),
             bridge: Arc::downgrade(&self.0),
-            system_state: Arc::new(TypedStateStore::<P>::default()),
+            system_state: Arc::new(SystemStateCell::<P>::default()),
         }
     }
 }
@@ -96,9 +96,10 @@ impl BridgeState {
     /// 5. Apply our `SystemState` back into the `World`. (Things like `Commands`).
     fn tick_sync_point(&self, sync_point_key: InternedSystemSet, world: &mut World) -> TickResult {
         let mut pending_request_batch = bevy_platform::prelude::vec![];
-        while let Ok(mut pending_request) = self.request_queues.get_or_create(&sync_point_key).pop()
+        while let Ok(pending_request) = self.request_queues.get_or_create(&sync_point_key).pop()
         {
-            pending_request_batch.push(pending_request.ensure_system_state_initialized(world));
+            pending_request.system_state.ensure_initialized(world);
+            pending_request_batch.push(pending_request);
         }
         // If no requests were waiting then report idle so the caller can decide whether to stop
         // or attempt one more task-pool tick.

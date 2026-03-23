@@ -1,4 +1,4 @@
-use crate::system_state_store::ErasedStateStore;
+use crate::system_state_cell::ErasedSystemStateCell;
 use bevy_ecs::prelude::World;
 use bevy_ecs::schedule::InternedSystemSet;
 use bevy_platform::sync::Arc;
@@ -15,31 +15,39 @@ pub(crate) struct PendingRequest {
     /// Our custom primitive that lets us wait until all the futures have tried to run before
     /// continuing.
     pub(crate) latch: crate::guarded_latch::LatchWaiter,
-    pub(crate) already_ready: bool,
-    pub(crate) system_state: Arc<dyn ErasedStateStore>,
+    pub(crate) system_state: Arc<dyn ErasedSystemStateCell>,
 }
 
 impl PendingRequest {
-    /// Initialize the `TypedStateStore` if it isn't already initialized.
-    pub(crate) fn ensure_system_state_initialized(mut self, world: &mut World) -> Self {
-        if self.already_ready {
-            return self;
+    fn wake(self) -> WokenRequest {
+        // Trigger the async future so it can poll while `scoped_world`
+        // is active.
+        self.waker.wake();
+        WokenRequest {
+            system_state: self.system_state,
+            latch: self.latch,
         }
-        self.system_state.initialize(world);
-        self.already_ready = true;
-        self
     }
 }
 
 /// A request whose waker has already been fired.
 struct WokenRequest {
     latch: crate::guarded_latch::LatchWaiter,
-    system_state: Arc<dyn ErasedStateStore>,
+    system_state: Arc<dyn ErasedSystemStateCell>,
+}
+
+impl WokenRequest {
+    fn wait(self) -> PolledRequest {
+        self.latch.wait();
+        PolledRequest {
+            system_state: self.system_state,
+        }
+    }
 }
 
 /// A request that has finished its attempted poll and may need to apply deferred world state.
 pub(crate) struct PolledRequest {
-    system_state: Arc<dyn ErasedStateStore>,
+    system_state: Arc<dyn ErasedSystemStateCell>,
 }
 
 impl PolledRequest {
@@ -55,22 +63,7 @@ pub fn wake_all_and_collect(
 ) -> bevy_platform::prelude::Vec<PolledRequest> {
     let woken_requests = pending_requests
         .into_iter()
-        .map(
-            |PendingRequest {
-                 system_state,
-                 waker,
-                 latch,
-                 ..
-             }| {
-                // Trigger the async future so it can poll while `scoped_world`
-                // is active.
-                waker.wake();
-                WokenRequest {
-                    system_state,
-                    latch,
-                }
-            },
-        )
+        .map(PendingRequest::wake)
         // we re-collect to ensure we fully exhaust the prior iterator
         // we want to have all the wakers call .wake() before waiting on the first latch
         .collect::<bevy_platform::prelude::Vec<_>>();
@@ -82,16 +75,5 @@ pub fn wake_all_and_collect(
         }
     }
 
-    woken_requests
-        .into_iter()
-        .map(
-            |WokenRequest {
-                 system_state,
-                 latch,
-             }| {
-                latch.wait();
-                PolledRequest { system_state }
-            },
-        )
-        .collect()
+    woken_requests.into_iter().map(WokenRequest::wait).collect()
 }

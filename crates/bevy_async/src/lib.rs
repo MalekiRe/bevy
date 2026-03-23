@@ -11,10 +11,10 @@ extern crate std;
 
 mod access;
 mod bridge;
-mod plugin;
 mod guarded_latch;
+mod plugin;
 mod request;
-mod system_state_store;
+mod system_state_cell;
 
 pub use crate::access::{AsyncAccessError, AsyncSystemHandle};
 pub use crate::bridge::{tick_async_bridge, AsyncBridge};
