@@ -1,29 +1,11 @@
 use crate::bridge::AsyncBridge;
 use bevy_app::App;
 
-/// Plugin entry point for the async <-> ECS bridge system.
-///
-/// This plugin installs an [`AsyncBridge`] singleton resource, and a
-/// configuration resource telling the bridge how aggressively to drive work
-/// at each sync point (configured through [`tick_budget`](AsyncPlugin::tick_budget)).
-///
-/// Conceptually, async tasks cannot directly access Bevy ECS state from arbitrary
-/// threads or arbitrary times. Instead, they enqueue requests which are later
-/// driven from a known ECS `SyncPoint` on the world-owning thread.
-///
-/// This supports arbitrary async runtimes as well as multiple Bevy Worlds / Bevy Apps.
+/// Plugin that installs the [`AsyncBridge`] resource and configures
+/// how aggressively sync points drive queued work.
 pub struct AsyncPlugin {
-    /// Upper bound on how many internal bridge ticks we perform each time a
-    /// sync point system runs.
-    ///
-    /// A single "bridge tick" means:
-    /// 1. collect queued access requests for that sync point,
-    /// 2. wake the corresponding async tasks,
-    /// 3. wait for each one to attempt a poll,
-    /// 4. apply any deferred `SystemState` work back into the world.
-    ///
-    /// We may need to do this multiple times because one task's progress can
-    /// unblock another task that previously returned `Poll::Pending`.
+    /// Max internal ticks per sync point. Higher values let chained
+    /// `.await` calls complete in a single frame at the cost of longer system runs.
     pub tick_budget: usize,
 }
 

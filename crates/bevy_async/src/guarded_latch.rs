@@ -1,95 +1,51 @@
+//! One-shot latch for synchronizing the scoped-world handshake.
+//!
+//! The future creates both sides via [`LatchGuard::new_pair`], keeps the
+//! [`LatchGuard`], and sends the [`LatchWaiter`] to the driver. When the
+//! future's poll finishes (or panics), the guard is dropped, signaling
+//! the driver that it is safe to un-scope the world.
+
 use bevy_platform::sync::Arc;
-
-#[cfg(feature = "std")]
-mod inner {
-    use bevy_platform::sync::Mutex;
-    use std::sync::Condvar;
-
-    pub(super) struct Inner {
-        lock: Mutex<bool>,
-        cv: Condvar,
-    }
-
-    #[inline]
-    pub(super) fn new() -> Inner {
-        let lock = Mutex::new(false);
-        let cv = Condvar::new();
-        Inner { lock, cv }
-    }
-
-    #[inline]
-    pub(super) fn signal(inner: &Inner) {
-        let Inner { lock, cv } = inner;
-        let mut signaled = lock.lock().unwrap();
-        *signaled = true;
-        cv.notify_one();
-    }
-
-    #[inline]
-    pub(super) fn wait(inner: &Inner) {
-        let Inner { lock, cv } = inner;
-        let mut signaled = lock.lock().unwrap();
-        while !*signaled {
-            signaled = cv.wait(signaled).unwrap();
-        }
-    }
-}
-
-#[cfg(not(feature = "std"))]
-mod inner {
-    use bevy_platform::sync::Mutex;
-
-    pub(super) type Inner = Mutex<bool>;
-
-    #[inline]
-    pub(super) fn new() -> Inner {
-        Mutex::new(false)
-    }
-
-    #[inline]
-    pub(super) fn signal(inner: &Inner) {
-        *inner.lock().unwrap() = true;
-    }
-
-    #[inline]
-    pub(super) fn wait(inner: &Inner) {
-        loop {
-            if *inner.lock().unwrap() {
-                break;
-            }
-        }
-    }
-}
+use std::sync::{Condvar, Mutex};
 
 /// Unblocks the paired [`LatchWaiter`] when dropped.
 ///
 /// Signaling on drop means it is guaranteed to fire even if the holder's scope
 /// panics or replaces the guard with a new one.
-pub(crate) struct LatchGuard(Arc<inner::Inner>);
+pub(crate) struct LatchGuard(Arc<LatchInner>);
+
+/// Waits (blocks) until the paired [`LatchGuard`] is dropped.
+pub(crate) struct LatchWaiter(Arc<LatchInner>);
+
+struct LatchInner {
+    signaled: Mutex<bool>,
+    cv: Condvar,
+}
 
 impl LatchGuard {
     /// Creates a paired [`LatchWaiter`] and [`LatchGuard`] for one-shot use.
-    #[inline]
     pub(crate) fn new_pair() -> (LatchWaiter, Self) {
-        let inner = Arc::new(inner::new());
+        let inner = Arc::new(LatchInner {
+            signaled: Mutex::new(false),
+            cv: Condvar::new(),
+        });
         (LatchWaiter(inner.clone()), Self(inner))
     }
 }
 
 impl Drop for LatchGuard {
-    #[inline]
     fn drop(&mut self) {
-        inner::signal(&self.0);
+        *self.0.signaled.lock().unwrap() = true;
+        self.0.cv.notify_one();
     }
 }
 
-/// Waits (blocks) until the paired [`LatchGuard`] is dropped.
-pub(crate) struct LatchWaiter(Arc<inner::Inner>);
-
 impl LatchWaiter {
     /// Blocks until the paired [`LatchGuard`] is dropped.
-    #[inline]
-    pub(crate) fn wait(self) {
-        inner::wait(&self.0);
+    pub(crate) fn wait(&self) {
+        let mut signaled = self.0.signaled.lock().unwrap();
+        while !*signaled {
+            signaled = self.0.cv.wait(signaled).unwrap();
+        }
     }
 }
