@@ -13,10 +13,49 @@ use scoped_static_storage::ScopedStatic;
 #[derive(bevy_ecs_macros::Resource, Default, Clone)]
 pub(crate) struct StrongAsyncWorld(pub(crate) Arc<AsyncWorldInner>);
 
+/// Shared resource for creating [`AsyncSystemState`]s that let async tasks access the ECS.
 #[derive(bevy_ecs_macros::Resource, Default, Clone)]
 pub struct AsyncWorld(pub(crate) Weak<AsyncWorldInner>);
 
 impl AsyncWorld {
+    /// Creates a reusable, cloneable handle for accessing [`SystemParams`](bevy_ecs::system::SystemParam) from async code.
+    /// Call [`.bridge(...)`](AsyncSystemState::bridge) on the returned handle to access the ECS.
+    ///
+    /// # Example
+    /// ```rust
+    /// use bevy_app::prelude::*;
+    /// use bevy_async::prelude::*;
+    /// use bevy_ecs::prelude::*;
+    /// use bevy_tasks::AsyncComputeTaskPool;
+    /// use bevy_platform::sync::atomic::AtomicBool;
+    /// use bevy_platform::sync::atomic::Ordering;
+    /// use bevy_platform::sync::Arc;
+    /// use bevy_app::ScheduleRunnerPlugin;
+    ///
+    /// struct MySyncPoint;
+    /// static ACCESS_RAN: AtomicBool = AtomicBool::new(false);
+    /// fn main() {
+    ///   let mut app = App::new();
+    ///   app.add_plugins((AsyncPlugin::default(), ScheduleRunnerPlugin::default(), TaskPoolPlugin::default()));
+    ///   app.add_systems(Update, async_world_sync_point::<MySyncPoint>);
+    ///   app.add_systems(Startup, move |world: Res<AsyncWorld>| {
+    ///       let world = world.clone();
+    ///       AsyncComputeTaskPool::get().spawn(async move {
+    ///           let commands_state = world.system_state::<Commands>();
+    ///           commands_state.bridge(MySyncPoint, |mut commands| {
+    ///               commands.spawn_empty();
+    ///               ACCESS_RAN.store(true, Ordering::Relaxed);
+    ///           }).await.unwrap();
+    ///       }).detach();
+    ///   });
+    ///   app.update();
+    ///
+    ///   assert!(ACCESS_RAN.load(Ordering::Relaxed));
+    /// }
+    ///
+    /// ```
+    ///
+    /// The underlying [`SystemState<Param>`](bevy_ecs::system::SystemParam) is initialized lazily on first use.
     pub fn system_state<Param: SystemParam + 'static>(&self) -> AsyncSystemState<Param> {
         AsyncSystemState::new(self.clone())
     }
@@ -35,6 +74,8 @@ impl AsyncWorldInner {
     }
 }
 
+/// Cloneable handle that lets async tasks access an ECS [`SystemParam`](bevy_ecs::system::SystemParam).
+/// Multiple tasks sharing the same handle will share [`Local`](bevy_ecs::system::Local)s and other state.
 pub struct AsyncSystemState<Param: SystemParam + 'static> {
     pub(crate) _p: PhantomData<Param>,
     pub(crate) inner: Arc<dyn ErasedSystemStateCell>,
@@ -52,6 +93,7 @@ impl<Param: SystemParam + 'static> Clone for AsyncSystemState<Param> {
 }
 
 impl<Param: SystemParam + 'static> AsyncSystemState<Param> {
+    /// Creates a new [`AsyncSystemParam`] (see [`AsyncWorld::system_state`])
     pub fn new(world: AsyncWorld) -> Self {
         Self {
             _p: PhantomData::default(),
@@ -60,6 +102,7 @@ impl<Param: SystemParam + 'static> AsyncSystemState<Param> {
         }
     }
 
+    /// Queues `bridge_fn` to run at the given sync point. This future is cancel-safe.
     pub async fn bridge<BridgeFn, Out, SyncPoint: 'static>(
         &self,
         _sync_point: SyncPoint,
@@ -81,6 +124,11 @@ pub(crate) enum TickResult {
     NoWork,
 }
 
+/// System that drives queued tasks for `SyncPoint`.
+///
+/// Ticks up to [`AsyncTickBudget`] times so that chained `.await` calls
+/// can complete within a single frame. Retries tasks fairly until they all
+/// get a chance to run.
 pub fn async_world_sync_point<SyncPoint: 'static>(world: &mut World) {
     let sync_point = async_world_sync_point::<SyncPoint>
         .into_system_set()

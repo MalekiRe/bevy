@@ -2,7 +2,11 @@ use crate::world::{AsyncWorld, StrongAsyncWorld};
 use bevy_app::App;
 use bevy_platform::sync::Arc;
 
+/// Plugin that installs the [`AsyncWorld`] resource and configures
+/// how aggressively sync points drive queued tasks.
 pub struct AsyncPlugin {
+    /// Max internal ticks per sync point. Higher values let chained
+    /// `.await` calls complete in a single frame at the cost of longer system runs.
     pub max_async_ticks_per_sync_point: usize,
 }
 
