@@ -1,4 +1,3 @@
-use crate::bridge::{BridgeFut, BridgeRequest};
 use crate::plugin::AsyncTickBudget;
 use crate::system_state::{ErasedSystemStateCell, SystemStateCell};
 use crate::EcsAccessError;
@@ -7,8 +6,9 @@ use bevy_ecs::system::SystemParam;
 use bevy_ecs::world::World;
 use bevy_platform::sync::{Arc, Weak};
 use core::marker::PhantomData;
-use keyed_concurrent_queue::KeyedQueues;
-use scoped_static_storage::ScopedStatic;
+
+#[cfg(feature = "std")]
+use crate::bridge::{BridgeFut, BridgeState};
 
 #[derive(bevy_ecs_macros::Resource, Default, Clone)]
 pub(crate) struct StrongAsyncWorld(pub(crate) Arc<AsyncWorldInner>);
@@ -63,14 +63,24 @@ impl AsyncWorld {
 
 #[derive(Default)]
 pub(crate) struct AsyncWorldInner {
-    pub(crate) bridge_requests: KeyedQueues<InternedSystemSet, BridgeRequest>,
-    pub(crate) world_scope: ScopedStatic<World>,
+    #[cfg(feature = "std")]
+    pub(crate) bridge_state: BridgeState,
 }
 
 impl AsyncWorldInner {
-    fn tick_sync_point(&self, sync_point: InternedSystemSet, world: &mut World) -> TickResult {
-        let bridge_queue = self.bridge_requests.get_or_create(&sync_point);
-        crate::bridge::tick_bridge_queue(&bridge_queue, &self.world_scope, world)
+    fn tick(&self, sync_point_key: InternedSystemSet, world: &mut World) -> TickResult {
+        let mut count = 0;
+
+        #[cfg(feature = "std")]
+        {
+            count += self.bridge_state.tick(sync_point_key, world);
+        }
+
+        if count > 0 {
+            TickResult::DidWork
+        } else {
+            TickResult::NoWork
+        }
     }
 }
 
@@ -93,7 +103,7 @@ impl<Param: SystemParam + 'static> Clone for AsyncSystemState<Param> {
 }
 
 impl<Param: SystemParam + 'static> AsyncSystemState<Param> {
-    /// Creates a new [`AsyncSystemParam`] (see [`AsyncWorld::system_state`])
+    /// Creates a new [`AsyncSystemState`] (see [`AsyncWorld::system_state`])
     pub fn new(world: AsyncWorld) -> Self {
         Self {
             _p: PhantomData::default(),
@@ -103,6 +113,7 @@ impl<Param: SystemParam + 'static> AsyncSystemState<Param> {
     }
 
     /// Queues `bridge_fn` to run at the given sync point. This future is cancel-safe.
+    #[cfg(feature = "std")]
     pub async fn bridge<BridgeFn, Out, SyncPoint: 'static>(
         &self,
         _sync_point: SyncPoint,
@@ -119,7 +130,7 @@ impl<Param: SystemParam + 'static> AsyncSystemState<Param> {
 }
 
 #[derive(PartialEq)]
-pub(crate) enum TickResult {
+enum TickResult {
     DidWork,
     NoWork,
 }
@@ -130,23 +141,27 @@ pub(crate) enum TickResult {
 /// can complete within a single frame. Retries tasks fairly until they all
 /// get a chance to run.
 pub fn async_world_sync_point<SyncPoint: 'static>(world: &mut World) {
-    let sync_point = async_world_sync_point::<SyncPoint>
+    let sync_point_key = async_world_sync_point::<SyncPoint>
         .into_system_set()
         .intern();
     let strong_world = world.get_resource::<StrongAsyncWorld>().unwrap().clone();
     let max_ticks = world.get_resource::<AsyncTickBudget>().unwrap().0;
     for _ in 0..max_ticks {
-        if strong_world.0.tick_sync_point(sync_point, world) == TickResult::NoWork {
+        if strong_world.0.tick(sync_point_key, world) == TickResult::NoWork {
             #[cfg(feature = "bevy_tasks")]
             bevy_tasks::cfg::web! {
-                if {} else {
+                if {
+                    return;
+                } else {
                     bevy_tasks::tick_global_task_pools_on_main_thread();
+                    // Retry once after ticking the global pool.
+                    if strong_world.0.tick(sync_point_key, world) == TickResult::NoWork {
+                        return;
+                    }
                 }
             }
-
-            if strong_world.0.tick_sync_point(sync_point, world) == TickResult::NoWork {
-                return;
-            }
+            #[cfg(not(feature = "bevy_tasks"))]
+            return;
         }
     }
 }

@@ -7,7 +7,6 @@ use bevy_platform::sync::{Arc, Mutex};
 /// so we implement the signaling *on* the Drop implementation.
 /// This also makes replacing the wake signal automatically drop and signal the previous one.
 #[derive(Clone)]
-#[cfg(feature = "std")]
 pub(crate) struct WakeSignal(
     #[cfg(feature = "std")] Arc<(Mutex<bool>, std::sync::Condvar)>,
     #[cfg(not(feature = "std"))] Arc<(Mutex<bool>)>,

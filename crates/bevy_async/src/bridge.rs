@@ -1,16 +1,16 @@
 use crate::system_state::ErasedSystemStateCell;
 use crate::wake_signal::WakeSignal;
-use crate::world::{AsyncSystemState, AsyncWorld, TickResult};
+use crate::world::{AsyncSystemState, AsyncWorld};
 use crate::EcsAccessError;
 use bevy_ecs::schedule::InternedSystemSet;
 use bevy_ecs::system::SystemParam;
 use bevy_ecs::world::World;
 use bevy_platform::prelude::Vec;
 use bevy_platform::sync::Arc;
-use concurrent_queue::ConcurrentQueue;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
+use keyed_concurrent_queue::KeyedQueues;
 use scoped_static_storage::ScopedStatic;
 
 pub(crate) struct BridgeFut<Param: SystemParam + 'static, Func, Out> {
@@ -39,6 +39,7 @@ impl<Params: SystemParam + 'static, Func, Out> BridgeFut<Params, Func, Out> {
     }
 }
 
+// None of the fields are self-referential.
 impl<Param: SystemParam + 'static, Func, Out> Unpin for BridgeFut<Param, Func, Out> {}
 
 impl<Param, Func, Out> Future for BridgeFut<Param, Func, Out>
@@ -49,15 +50,20 @@ where
     type Output = Result<Out, EcsAccessError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Grab the poll guard (if any) so that we can drop it when
+        // poll exits in any way and send a signal to the waiter.
         let _drop_at_end_of_scope = self.wake_signal.take();
 
-        let strong_world = match self.world.0.upgrade() {
+        let strong_world_handle = match self.world.0.upgrade() {
             None => return Poll::Ready(Err(EcsAccessError::WorldDropped)),
             Some(b) => b,
         };
 
-        let result = strong_world
-            .world_scope
+        // Try to access the scoped world. If the world-owning thread is currently inside
+        // `ScopedStatic::scope()`, we can run our closure directly with `&mut World`.
+        match strong_world_handle
+            .bridge_state
+            .scoped_world
             .try_with(|world| {
                 let Self {
                     ref system_state,
@@ -75,11 +81,13 @@ where
                 Some(Ok(bridge_fn.take().unwrap()(param)))
             })
             .ok()
-            .flatten();
-
-        match result {
+            .flatten()
+        {
+            // Success! Finish the future with the result.
             Some(result) => Poll::Ready(result),
             None => {
+                // World contended or not scoped, or system state contended.
+                // Enqueue ourselves for the next tick.
                 let wake_signal = WakeSignal::new();
                 self.wake_signal.replace(wake_signal.clone());
                 let request = BridgeRequest {
@@ -87,8 +95,9 @@ where
                     wake_signal,
                     system_state: self.system_state.clone(),
                 };
-                match strong_world
-                    .bridge_requests
+                match strong_world_handle
+                    .bridge_state
+                    .requests
                     .try_send(&self.sync_point_key, request)
                 {
                     Ok(_) => Poll::Pending,
@@ -100,9 +109,9 @@ where
 }
 
 pub(crate) struct BridgeRequest {
-    pub(crate) waker: Waker,
-    pub(crate) wake_signal: WakeSignal,
-    pub(crate) system_state: Arc<dyn ErasedSystemStateCell>,
+    waker: Waker,
+    wake_signal: WakeSignal,
+    system_state: Arc<dyn ErasedSystemStateCell>,
 }
 
 impl BridgeRequest {
@@ -115,7 +124,7 @@ impl BridgeRequest {
     }
 }
 
-pub struct WokenBridgeRequest {
+struct WokenBridgeRequest {
     wake_signal: WakeSignal,
     system_state: Arc<dyn ErasedSystemStateCell>,
 }
@@ -127,32 +136,40 @@ impl WokenBridgeRequest {
     }
 }
 
-#[inline]
-pub(crate) fn tick_bridge_queue(
-    queue: &ConcurrentQueue<BridgeRequest>,
-    scoped_world: &ScopedStatic<World>,
-    world: &mut World,
-) -> TickResult {
-    let batch = queue.try_iter().collect::<Vec<_>>();
-    if batch.is_empty() {
-        return TickResult::NoWork;
+#[derive(Default)]
+pub(crate) struct BridgeState {
+    requests: KeyedQueues<InternedSystemSet, BridgeRequest>,
+    scoped_world: ScopedStatic<World>,
+}
+
+impl BridgeState {
+    pub(crate) fn tick(&self, sync_point_key: InternedSystemSet, world: &mut World) -> usize {
+        let queue = self.requests.get_or_create(&sync_point_key);
+        let batch = queue.try_iter().collect::<Vec<_>>();
+        if batch.is_empty() {
+            return 0;
+        }
+
+        let count = batch.len();
+        let system_states = self.scoped_world.scope(world, || {
+            // Wake all futures first, then wait on all woken futures.
+            // Separating wake from wait allows maximum parallelism on
+            // multithreaded executors.
+            let woken: Vec<_> = batch.into_iter().map(BridgeRequest::wake).collect();
+
+            #[cfg(feature = "bevy_tasks")]
+            bevy_tasks::tick_global_task_pools_on_main_thread();
+
+            woken
+                .into_iter()
+                .map(WokenBridgeRequest::wait)
+                .collect::<Vec<_>>()
+        });
+
+        for system_state in system_states {
+            system_state.apply(world);
+        }
+
+        count
     }
-
-    let system_states = scoped_world.scope(world, || {
-        let woken: Vec<_> = batch.into_iter().map(BridgeRequest::wake).collect();
-
-        #[cfg(feature = "bevy_tasks")]
-        bevy_tasks::tick_global_task_pools_on_main_thread();
-
-        woken
-            .into_iter()
-            .map(WokenBridgeRequest::wait)
-            .collect::<Vec<_>>()
-    });
-
-    for system_state in system_states {
-        system_state.apply(world);
-    }
-
-    TickResult::DidWork
 }

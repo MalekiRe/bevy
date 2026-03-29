@@ -47,11 +47,13 @@
 #[cfg(feature = "std")]
 extern crate std;
 
-mod bridge;
 mod plugin;
 mod system_state;
 mod wake_signal;
 mod world;
+
+#[cfg(feature = "std")]
+mod bridge;
 
 pub use plugin::AsyncPlugin;
 pub use world::{async_world_sync_point, AsyncSystemState, AsyncWorld};
