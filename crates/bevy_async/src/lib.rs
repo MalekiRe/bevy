@@ -79,4 +79,31 @@ pub enum EcsAccessError {
     /// The world has been dropped, so we can't ever access it again.
     #[error("World no longer exists")]
     WorldDropped,
+    /// The closure panicked during execution. The panic was caught so the
+    /// schedule could continue.
+    #[cfg(all(feature = "std", panic = "unwind"))]
+    #[error("Closure panicked")]
+    Panicked,
+}
+
+/// Internal helper that runs the user closure, catching panics so one bad closure doesn't take down
+/// the entire schedule.
+#[cfg(all(feature = "std", panic = "unwind"))]
+#[inline(always)]
+pub(crate) fn invoke<Func, Args, Out>(func: Func, args: Args) -> Result<Out, EcsAccessError>
+where
+    Func: FnOnce(Args) -> Out,
+{
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| func(args)))
+        .map_err(|_| EcsAccessError::Panicked)
+}
+
+/// Fallback when `catch_unwind` is unavailable. The panic propagates normally.
+#[cfg(not(all(feature = "std", panic = "unwind")))]
+#[inline(always)]
+fn invoke<Func, Args, Out>(func: Func, args: Args) -> Result<Out, AsyncAccessError>
+where
+    Func: FnOnce(Args) -> Out,
+{
+    Ok(func(args))
 }

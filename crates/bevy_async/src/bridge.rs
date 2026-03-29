@@ -78,7 +78,9 @@ where
                     Err(e) => return Some(Err(EcsAccessError::SystemParamValidation(e))),
                 };
 
-                Some(Ok(bridge_fn.take().unwrap()(param)))
+                // Invariant: This future shouldn't be polled after it returns Poll::Ready
+                let bridge_fn = bridge_fn.take().unwrap();
+                Some(crate::invoke(bridge_fn, param))
             })
             .ok()
             .flatten()
