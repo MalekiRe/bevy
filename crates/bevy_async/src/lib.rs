@@ -67,7 +67,7 @@ mod run;
 mod system_state;
 mod world;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_family = "wasm")))]
 mod bridge;
 
 pub use plugin::AsyncPlugin;
@@ -116,7 +116,7 @@ where
 /// Fallback when `catch_unwind` is unavailable. The panic propagates normally.
 #[cfg(not(all(feature = "std", panic = "unwind")))]
 #[inline(always)]
-fn invoke<Func, Args, Out>(func: Func, args: Args) -> Result<Out, AsyncAccessError>
+pub(crate) fn invoke<Func, Args, Out>(func: Func, args: Args) -> Result<Out, EcsAccessError>
 where
     Func: FnOnce(Args) -> Out,
 {

@@ -1,3 +1,4 @@
+use crate::job::{JobFut, JobState};
 use crate::plugin::AsyncTickBudget;
 use crate::run::{RunState, RunnerFut};
 use crate::system_state::{ErasedSystemStateCell, SystemStateCell};
@@ -8,9 +9,8 @@ use bevy_ecs::world::World;
 use bevy_platform::sync::{Arc, Weak};
 use core::marker::PhantomData;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_family = "wasm")))]
 use crate::bridge::{BridgeFut, BridgeState};
-use crate::job::{JobFut, JobState};
 
 #[derive(bevy_ecs_macros::Resource, Default, Clone)]
 pub(crate) struct StrongAsyncWorld(pub(crate) Arc<AsyncWorldInner>);
@@ -69,7 +69,7 @@ impl AsyncWorld {
 pub(crate) struct AsyncWorldInner {
     pub(crate) run_state: RunState,
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_family = "wasm")))]
     pub(crate) bridge_state: BridgeState,
 }
 
@@ -80,7 +80,7 @@ impl AsyncWorldInner {
         // Tick 'static+Send tasks
         count += self.run_state.tick(sync_point_key, world);
 
-        #[cfg(feature = "std")]
+        #[cfg(all(feature = "std", not(target_family = "wasm")))]
         {
             // Tick non-'static tasks
             count += self.bridge_state.tick(sync_point_key, world);
@@ -123,7 +123,7 @@ impl<Param: SystemParam + 'static> AsyncSystemState<Param> {
     }
 
     /// Queues `bridge_fn` to run at the given sync point. This future is cancel-safe.
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_family = "wasm")))]
     pub async fn bridge<BridgeFn, Out, SyncPoint: 'static>(
         &self,
         _sync_point: SyncPoint,

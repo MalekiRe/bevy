@@ -5,7 +5,7 @@ use bevy_ecs::world::World;
 use bevy_platform::sync::atomic::{AtomicBool, Ordering};
 use bevy_platform::sync::{Arc, Mutex};
 use core::marker::PhantomData;
-use std::task::Waker;
+use core::task::Waker;
 
 pub(crate) struct Runner<Param: SystemParam + 'static, Func, Out> {
     cancelled: AtomicBool,

@@ -9,19 +9,19 @@ use bevy_platform::sync::Arc;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+use guarded_latch::LatchGuard;
 use keyed_concurrent_queue::KeyedQueues;
 use request::{BridgeRequest, WokenBridgeRequest};
 use scoped_static_storage::ScopedStatic;
-use wake_signal::WakeSignal;
 
+mod guarded_latch;
 mod request;
-mod wake_signal;
 
 pub(crate) struct BridgeFut<Param: SystemParam + 'static, Func, Out> {
     _p: PhantomData<(Param, Out)>,
     sync_point_key: InternedSystemSet,
     bridge_fn: Option<Func>,
-    wake_signal: Option<WakeSignal>,
+    maybe_poll_guard: Option<LatchGuard>,
     system_state: Arc<dyn ErasedSystemStateCell>,
     world: AsyncWorld,
 }
@@ -35,7 +35,7 @@ impl<Param: SystemParam + 'static, Func, Out> BridgeFut<Param, Func, Out> {
         Self {
             sync_point_key,
             bridge_fn: Some(bridge_fn),
-            wake_signal: None,
+            maybe_poll_guard: None,
             system_state: state.inner.clone(),
             world: state.world.clone(),
             _p: PhantomData,
@@ -56,7 +56,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Grab the poll guard (if any) so that we can drop it when
         // poll exits in any way and send a signal to the waiter.
-        let _drop_at_end_of_scope = self.wake_signal.take();
+        let _maybe_poll_guard = self.maybe_poll_guard.take();
 
         let strong_world_handle = match self.world.0.upgrade() {
             None => return Poll::Ready(Err(EcsAccessError::WorldDropped)),
@@ -94,11 +94,11 @@ where
             None => {
                 // World contended or not scoped, or system state contended.
                 // Enqueue ourselves for the next tick.
-                let wake_signal = WakeSignal::new();
-                self.wake_signal.replace(wake_signal.clone());
+                let (latch, guard) = LatchGuard::new_pair();
+                self.maybe_poll_guard = Some(guard);
                 let request = BridgeRequest {
                     waker: cx.waker().clone(),
-                    wake_signal,
+                    latch,
                     system_state: self.system_state.clone(),
                 };
                 match strong_world_handle
