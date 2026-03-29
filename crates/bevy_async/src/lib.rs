@@ -49,7 +49,6 @@ extern crate std;
 
 mod plugin;
 mod system_state;
-mod wake_signal;
 mod world;
 
 #[cfg(feature = "std")]

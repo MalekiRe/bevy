@@ -1,5 +1,4 @@
 use crate::system_state::ErasedSystemStateCell;
-use crate::wake_signal::WakeSignal;
 use crate::world::{AsyncSystemState, AsyncWorld};
 use crate::EcsAccessError;
 use bevy_ecs::schedule::InternedSystemSet;
@@ -9,9 +8,14 @@ use bevy_platform::prelude::Vec;
 use bevy_platform::sync::Arc;
 use core::marker::PhantomData;
 use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
+use core::task::{Context, Poll};
 use keyed_concurrent_queue::KeyedQueues;
+use request::{BridgeRequest, WokenBridgeRequest};
 use scoped_static_storage::ScopedStatic;
+use wake_signal::WakeSignal;
+
+mod request;
+mod wake_signal;
 
 pub(crate) struct BridgeFut<Param: SystemParam + 'static, Func, Out> {
     _p: PhantomData<(Param, Out)>,
@@ -107,34 +111,6 @@ where
                 }
             }
         }
-    }
-}
-
-pub(crate) struct BridgeRequest {
-    waker: Waker,
-    wake_signal: WakeSignal,
-    system_state: Arc<dyn ErasedSystemStateCell>,
-}
-
-impl BridgeRequest {
-    fn wake(self) -> WokenBridgeRequest {
-        self.waker.wake();
-        WokenBridgeRequest {
-            wake_signal: self.wake_signal,
-            system_state: self.system_state,
-        }
-    }
-}
-
-struct WokenBridgeRequest {
-    wake_signal: WakeSignal,
-    system_state: Arc<dyn ErasedSystemStateCell>,
-}
-
-impl WokenBridgeRequest {
-    fn wait(self) -> Arc<dyn ErasedSystemStateCell> {
-        self.wake_signal.wait();
-        self.system_state
     }
 }
 
