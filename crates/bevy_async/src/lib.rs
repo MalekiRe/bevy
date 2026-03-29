@@ -9,19 +9,26 @@
 #[cfg(feature = "std")]
 extern crate std;
 
-mod async_bridge;
-mod ecs_access;
+mod bridge;
 mod plugin;
-mod system_state_store;
+mod system_state;
 mod wake_signal;
+mod world;
 
-pub use crate::async_bridge::async_world_sync_point;
-pub use crate::ecs_access::{AsyncSystemState, EcsAccessError};
-pub use crate::plugin::{AsyncPlugin, AsyncWorld};
+pub use plugin::AsyncPlugin;
+pub use world::{async_world_sync_point, AsyncSystemState, AsyncWorld};
 
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::{
         async_world_sync_point, AsyncPlugin, AsyncSystemState, AsyncWorld, EcsAccessError,
     };
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum EcsAccessError {
+    #[error(transparent)]
+    SystemParamValidation(bevy_ecs::system::SystemParamValidationError),
+    #[error("World no longer exists")]
+    WorldDropped,
 }
