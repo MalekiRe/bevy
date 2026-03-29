@@ -26,11 +26,11 @@ pub(crate) struct BridgeFut<Param: SystemParam + 'static, Func, Out> {
     world: AsyncWorld,
 }
 
-impl<Params: SystemParam + 'static, Func, Out> BridgeFut<Params, Func, Out> {
+impl<Param: SystemParam + 'static, Func, Out> BridgeFut<Param, Func, Out> {
     pub(crate) fn new(
         sync_point_key: InternedSystemSet,
         bridge_fn: Func,
-        state: &AsyncSystemState<Params>,
+        state: &AsyncSystemState<Param>,
     ) -> Self {
         Self {
             sync_point_key,
@@ -60,7 +60,7 @@ where
 
         let strong_world_handle = match self.world.0.upgrade() {
             None => return Poll::Ready(Err(EcsAccessError::WorldDropped)),
-            Some(b) => b,
+            Some(w) => w,
         };
 
         // Try to access the scoped world. If the world-owning thread is currently inside
@@ -83,8 +83,8 @@ where
                 };
 
                 // Invariant: This future shouldn't be polled after it returns Poll::Ready
-                let bridge_fn = bridge_fn.take().unwrap();
-                Some(crate::invoke(bridge_fn, param))
+                let func = bridge_fn.take().unwrap();
+                Some(crate::invoke(func, param))
             })
             .ok()
             .flatten()

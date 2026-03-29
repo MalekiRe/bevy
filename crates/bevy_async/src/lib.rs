@@ -6,9 +6,8 @@
 //!
 //! | Method | Bounds on closure | Platform | Mechanism |
 //! |--------|-------------------|----------|-----------|
-//! | [`AsyncSystemState::bridge`] | *(none)* | `std` only | Scoped world: future runs the closure during poll |
-//!
-//! (eventually there will be a second mode with `'static+ConditionalSend` closure bounds that works on all platforms)
+//! | [`AsyncSystemState::run`] | `Send + 'static` | any | Ownership transfer queue: world thread takes and runs the closure directly |
+//! | [`AsyncSystemState::bridge`] | *(none)* | native `std` | Scoped world: future runs an owned closure during poll |
 //!
 //! # Crate-level invariants
 //!
@@ -21,10 +20,26 @@
 //!
 //! # Protocol
 //!
-//! ## "Bridged" closure, native `std` only
+//! ## "Run" closure: `no_std` and/or web
 //!
 //! ```text
-//! Async task                         AsyncWorld (world-owned resource on world-owning thread)
+//! Async task                         World-owning thread
+//! ----------                         ----------------------------
+//! enqueue Runner ------------>       1. Drain run queue
+//!                                    2. Skip cancelled futures
+//!                                    3. Initialize SystemStates
+//!                                    4. Run each closure with &mut World
+//!                                       -> Success: store result
+//!                                       -> Lock contended: re-queue
+//!                                    5. Apply deferred ops
+//!                                    6. Wake futures
+//! receive result <------------       7. Loop (up to tick budget) or return
+//! ```
+//!
+//! ## "Bridged" closure: native `std` only
+//!
+//! ```text
+//! Async task                         World-owning thread
 //! ----------                         ----------------------------
 //! enqueue BridgeRequest ----->        1. Drain bridge request queue
 //!       (with drop guard)             2. Scope &mut World into shared slot
@@ -48,6 +63,7 @@
 extern crate std;
 
 mod plugin;
+mod run;
 mod system_state;
 mod world;
 

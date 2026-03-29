@@ -1,4 +1,5 @@
 use crate::plugin::AsyncTickBudget;
+use crate::run::{RunState, RunnerFut};
 use crate::system_state::{ErasedSystemStateCell, SystemStateCell};
 use crate::EcsAccessError;
 use bevy_ecs::schedule::{InternedSystemSet, IntoSystemSet, SystemSet};
@@ -9,6 +10,7 @@ use core::marker::PhantomData;
 
 #[cfg(feature = "std")]
 use crate::bridge::{BridgeFut, BridgeState};
+use crate::job::{JobFut, JobState};
 
 #[derive(bevy_ecs_macros::Resource, Default, Clone)]
 pub(crate) struct StrongAsyncWorld(pub(crate) Arc<AsyncWorldInner>);
@@ -18,8 +20,10 @@ pub(crate) struct StrongAsyncWorld(pub(crate) Arc<AsyncWorldInner>);
 pub struct AsyncWorld(pub(crate) Weak<AsyncWorldInner>);
 
 impl AsyncWorld {
-    /// Creates a reusable, cloneable handle for accessing [`SystemParams`](bevy_ecs::system::SystemParam) from async code.
-    /// Call [`.bridge(...)`](AsyncSystemState::bridge) on the returned handle to access the ECS.
+    /// Creates a reusable, cloneable handle for accessing [`SystemParam`](bevy_ecs::system::SystemParam)s from async code.
+    /// Call [`.run(...)`](AsyncSystemState::run) on the returned handle to access the ECS.
+    ///
+    /// Native+`std` platforms may use [`.bridge(...)`](AsyncSystemState::bridge) to run closures that capture mutable references:
     ///
     /// # Example
     /// ```rust
@@ -55,7 +59,7 @@ impl AsyncWorld {
     ///
     /// ```
     ///
-    /// The underlying [`SystemState<Param>`](bevy_ecs::system::SystemParam) is initialized lazily on first use.
+    /// The underlying [`SystemState<Param>`](bevy_ecs::system::SystemState) is initialized lazily on first use.
     pub fn system_state<Param: SystemParam + 'static>(&self) -> AsyncSystemState<Param> {
         AsyncSystemState::new(self.clone())
     }
@@ -63,6 +67,8 @@ impl AsyncWorld {
 
 #[derive(Default)]
 pub(crate) struct AsyncWorldInner {
+    pub(crate) run_state: RunState,
+
     #[cfg(feature = "std")]
     pub(crate) bridge_state: BridgeState,
 }
@@ -71,8 +77,12 @@ impl AsyncWorldInner {
     fn tick(&self, sync_point_key: InternedSystemSet, world: &mut World) -> TickResult {
         let mut count = 0;
 
+        // Tick 'static+Send tasks
+        count += self.run_state.tick(sync_point_key, world);
+
         #[cfg(feature = "std")]
         {
+            // Tick non-'static tasks
             count += self.bridge_state.tick(sync_point_key, world);
         }
 
@@ -126,6 +136,22 @@ impl<Param: SystemParam + 'static> AsyncSystemState<Param> {
             .into_system_set()
             .intern();
         BridgeFut::new(sync_point_key, bridge_fn, &self).await
+    }
+
+    /// Queues `run_fn` (`'static + Send`) to run at the given sync point. This future is cancel-safe.
+    pub async fn run<RunnerFn, Out, SyncPoint: 'static>(
+        &self,
+        _sync_point: SyncPoint,
+        runner_fn: RunnerFn,
+    ) -> Result<Out, EcsAccessError>
+    where
+        for<'w, 's> RunnerFn: FnOnce(Param::Item<'w, 's>) -> Out + Send + 'static,
+        Out: Send + 'static,
+    {
+        let sync_point_key = async_world_sync_point::<SyncPoint>
+            .into_system_set()
+            .intern();
+        RunnerFut::new(sync_point_key, runner_fn, &self).await
     }
 }
 
