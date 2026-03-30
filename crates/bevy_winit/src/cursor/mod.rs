@@ -65,15 +65,15 @@ impl WinitAppRunnerState {
         let mut windows_state: SystemState<(
             ResMut<WinitCustomCursorCache>,
             Query<(Entity, &mut PendingCursor), Changed<PendingCursor>>,
-        )> = SystemState::new(self.world_mut());
+        )> = SystemState::new(self.world_mut().unwrap());
         #[cfg(feature = "custom_cursor")]
-        let (mut cursor_cache, mut windows) = windows_state.get_mut(self.world_mut()).unwrap();
+        let (mut cursor_cache, mut windows) = windows_state.get_mut(self.world_mut().unwrap()).unwrap();
         #[cfg(not(feature = "custom_cursor"))]
         let mut windows_state: SystemState<(
             Query<(Entity, &mut PendingCursor), Changed<PendingCursor>>,
-        )> = SystemState::new(self.world_mut());
+        )> = SystemState::new(self.world_mut().unwrap());
         #[cfg(not(feature = "custom_cursor"))]
-        let (mut windows,) = windows_state.get_mut(self.world_mut()).unwrap();
+        let (mut windows,) = windows_state.get_mut(self.world_mut().unwrap()).unwrap();
 
         WINIT_WINDOWS.with_borrow(|winit_windows| {
             for (entity, mut pending_cursor) in windows.iter_mut() {
