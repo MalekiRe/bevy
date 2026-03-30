@@ -19,6 +19,8 @@ std = [
   "keyed_concurrent_queue/std",
 ]
 
+web = []
+
 [dependencies]
 # bevy
 bevy_app = { path = "../bevy_app", version = "0.19.0-dev", default-features = false }

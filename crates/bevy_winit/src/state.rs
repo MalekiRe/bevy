@@ -27,7 +27,7 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::WindowId,
 };
-
+use bevy_async::APP_HOLDER;
 use bevy_window::{
     AppLifecycle, CursorEntered, CursorLeft, CursorMoved, FileDragAndDrop, Ime, RequestRedraw,
     Window, WindowBackendScaleFactorChanged, WindowCloseRequested, WindowDestroyed,
@@ -49,7 +49,7 @@ use crate::{
 /// [`UpdateMode`].
 pub(crate) struct WinitAppRunnerState {
     /// The running app.
-    app: App,
+    app: Option<App>,
     /// Exit value once the loop is finished.
     app_exit: Option<AppExit>,
     /// Current update mode of the app.
@@ -106,7 +106,7 @@ impl WinitAppRunnerState {
         )> = SystemState::new(app.world_mut());
 
         Self {
-            app,
+            app: Some(app),
             lifecycle: AppLifecycle::Idle,
             previous_lifecycle: AppLifecycle::Idle,
             app_exit: None,
@@ -133,11 +133,11 @@ impl WinitAppRunnerState {
     }
 
     fn world(&self) -> &World {
-        self.app.world()
+        self.app.as_ref().unwrap().world()
     }
 
-    pub(crate) fn world_mut(&mut self) -> &mut World {
-        self.app.world_mut()
+    pub(crate) fn world_mut(&mut self) -> Option<&mut World> {
+        self.app.as_mut().map(|a| a.world_mut())
     }
 }
 
@@ -146,17 +146,20 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
         if event_loop.exiting() {
             return;
         }
+        if let Some(app) = bevy_async::APP_HOLDER.take().take() {
+            self.app.replace(app);
+        }
 
         #[cfg(feature = "trace")]
         let _span = tracing::info_span!("winit event_handler").entered();
 
-        if self.app.plugins_state() != PluginsState::Cleaned {
-            if self.app.plugins_state() != PluginsState::Ready {
+        if self.app.as_mut().unwrap().plugins_state() != PluginsState::Cleaned {
+            if self.app.as_mut().unwrap().plugins_state() != PluginsState::Ready {
                 #[cfg(not(target_arch = "wasm32"))]
                 tick_global_task_pools_on_main_thread();
             } else {
-                self.app.finish();
-                self.app.cleanup();
+                self.app.as_mut().unwrap().finish();
+                self.app.as_mut().unwrap().cleanup();
             }
             self.redraw_requested = true;
         }
@@ -172,17 +175,22 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
             }
             _ => true,
         };
+        APP_HOLDER.set(self.app.take());
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = bevy_async::APP_HOLDER.take().take() {
+            self.app.replace(app);
+        }
         // Mark the state as `WillResume`. This will let the schedule run one extra time
         // when actually resuming the app
         self.lifecycle = AppLifecycle::WillResume;
 
         // Create the initial window if needed
-        let mut create_window = SystemState::<CreateWindowParams>::from_world(self.world_mut());
-        create_windows(event_loop, create_window.get_mut(self.world_mut()).unwrap());
-        create_window.apply(self.world_mut());
+        let mut create_window = SystemState::<CreateWindowParams>::from_world(self.world_mut().unwrap());
+        create_windows(event_loop, create_window.get_mut(self.world_mut().unwrap()).unwrap());
+        create_window.apply(self.world_mut().unwrap());
+        APP_HOLDER.set(self.app.take());
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: WinitUserEvent) {
@@ -194,9 +202,9 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
             }
             WinitUserEvent::WindowAdded => {
                 let mut create_window =
-                    SystemState::<CreateWindowParams>::from_world(self.world_mut());
-                create_windows(event_loop, create_window.get_mut(self.world_mut()).unwrap());
-                create_window.apply(self.world_mut());
+                    SystemState::<CreateWindowParams>::from_world(self.world_mut().unwrap());
+                create_windows(event_loop, create_window.get_mut(self.world_mut().unwrap()).unwrap());
+                create_window.apply(self.world_mut().unwrap());
             }
         }
     }
@@ -207,6 +215,9 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let Some(app) = bevy_async::APP_HOLDER.take().take() {
+            self.app.replace(app);
+        }
         self.window_event_received = true;
 
         #[cfg_attr(
@@ -224,7 +235,7 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
                     mut windows,
                 ) = self
                     .message_writer_system_state
-                    .get_mut(self.app.world_mut())
+                    .get_mut(self.app.as_mut().unwrap().world_mut())
                     .unwrap();
 
                 let Some(window) = winit_windows.get_window_entity(window_id) else {
@@ -430,8 +441,8 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
                     _ => {}
                 }
 
-                let mut windows = self.world_mut().query::<(&mut Window, &mut CachedWindow)>();
-                if let Ok((window_component, mut cache)) = windows.get_mut(self.world_mut(), window)
+                let mut windows = self.world_mut().unwrap().query::<(&mut Window, &mut CachedWindow)>();
+                if let Ok((window_component, mut cache)) = windows.get_mut(self.world_mut().unwrap(), window)
                     && window_component.is_changed()
                 {
                     **cache = window_component.clone();
@@ -442,6 +453,7 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
         if manual_run_redraw_requested {
             self.redraw_requested(_event_loop);
         }
+        APP_HOLDER.set(self.app.take());
     }
 
     fn device_event(
@@ -459,12 +471,15 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let mut create_monitor = SystemState::<CreateMonitorParams>::from_world(self.world_mut());
+        if let Some(app) = APP_HOLDER.take() {
+            self.app.replace(app);
+        }
+        let mut create_monitor = SystemState::<CreateMonitorParams>::from_world(self.world_mut().unwrap());
         create_monitors(
             event_loop,
-            create_monitor.get_mut(self.world_mut()).unwrap(),
+            create_monitor.get_mut(self.world_mut().unwrap()).unwrap(),
         );
-        create_monitor.apply(self.world_mut());
+        create_monitor.apply(self.world_mut().unwrap());
 
         // TODO: This is a workaround for https://github.com/bevyengine/bevy/issues/17488
         //       while preserving the iOS fix in https://github.com/bevyengine/bevy/pull/11245
@@ -494,6 +509,7 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
                 self.redraw_requested(event_loop);
             }
         }
+        APP_HOLDER.set(self.app.take());
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
@@ -507,7 +523,7 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
         // Prevents panic on macOS when exiting from exclusive fullscreen.
         WINIT_WINDOWS.with(|ww| ww.borrow_mut().windows.clear());
 
-        let world = self.world_mut();
+        let world = self.world_mut().unwrap();
         world.clear_all();
     }
 }
@@ -518,7 +534,7 @@ impl WinitAppRunnerState {
         let mut close_message_cursor = MessageCursor::<WindowCloseRequested>::default();
 
         let mut focused_windows_state: SystemState<(Res<WinitSettings>, Query<(Entity, &Window)>)> =
-            SystemState::new(self.world_mut());
+            SystemState::new(self.world_mut().unwrap());
 
         let (config, windows) = focused_windows_state.get(self.world()).unwrap();
         let focused = windows.iter().any(|(_, window)| window.focused);
@@ -543,10 +559,10 @@ impl WinitAppRunnerState {
                 // Remove the `RawHandleWrapper` from the primary window.
                 // This will trigger the surface destruction.
                 let mut query = self
-                    .world_mut()
+                    .world_mut().unwrap()
                     .query_filtered::<Entity, With<PrimaryWindow>>();
                 let entity = query.single(&self.world()).unwrap();
-                self.world_mut()
+                self.world_mut().unwrap()
                     .entity_mut(entity)
                     .remove::<RawHandleWrapper>();
             }
@@ -564,7 +580,7 @@ impl WinitAppRunnerState {
                 // Get windows that are cached but without raw handles. Those window were already created, but got their
                 // handle wrapper removed when the app was suspended.
 
-                let mut query = self.world_mut()
+                let mut query = self.world_mut().unwrap()
                     .query_filtered::<(Entity, &Window, &CursorOptions), (With<CachedWindow>, Without<RawHandleWrapper>)>();
                 if let Ok((entity, window, cursor_options)) = query.single(&self.world()) {
                     let window = window.clone();
@@ -573,10 +589,10 @@ impl WinitAppRunnerState {
                     WINIT_WINDOWS.with_borrow_mut(|winit_windows| {
                         ACCESS_KIT_ADAPTERS.with_borrow_mut(|adapters| {
                             let mut create_window =
-                                SystemState::<CreateWindowParams>::from_world(self.world_mut());
+                                SystemState::<CreateWindowParams>::from_world(self.world_mut().unwrap());
 
                             let (.., mut handlers, accessibility_requested, monitors) =
-                                create_window.get_mut(self.world_mut()).unwrap();
+                                create_window.get_mut(self.world_mut().unwrap()).unwrap();
 
                             let winit_window = winit_windows.create_window(
                                 event_loop,
@@ -591,7 +607,7 @@ impl WinitAppRunnerState {
 
                             let wrapper = RawHandleWrapper::new(winit_window).unwrap();
 
-                            self.world_mut().entity_mut(entity).insert(wrapper);
+                            self.world_mut().unwrap().entity_mut(entity).insert(wrapper);
                         });
                     });
                 }
@@ -734,7 +750,7 @@ impl WinitAppRunnerState {
             self.redraw_requested = false;
         }
 
-        if let Some(app_exit) = self.app.should_exit() {
+        if let Some(app_exit) = self.app.as_ref().unwrap().should_exit() {
             self.app_exit = Some(app_exit);
 
             event_loop.exit();
@@ -770,15 +786,15 @@ impl WinitAppRunnerState {
 
         self.forward_bevy_events();
 
-        if self.app.plugins_state() == PluginsState::Cleaned {
-            self.app.update();
+        if self.app.as_mut().unwrap().plugins_state() == PluginsState::Cleaned {
+            self.app.as_mut().unwrap().update();
         }
     }
 
     fn forward_bevy_events(&mut self) {
         let raw_winit_events = self.raw_winit_events.drain(..).collect::<Vec<_>>();
         let window_events = self.bevy_window_events.drain(..).collect::<Vec<_>>();
-        let world = self.world_mut();
+        let world = self.world_mut().unwrap();
 
         if !raw_winit_events.is_empty() {
             world
@@ -1062,7 +1078,7 @@ mod tests {
 
         let mut window = Window::default();
         window.resolution.set_scale_factor(initial_scale_factor);
-        let window_entity = app.world_mut().spawn(window).id();
+        let window_entity = app.world_mut().unwrap().spawn(window).id();
 
         (app, window_entity)
     }

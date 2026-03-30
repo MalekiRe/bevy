@@ -7,6 +7,12 @@ use bevy_ecs::schedule::{InternedSystemSet, IntoSystemSet, SystemSet};
 use bevy_ecs::system::SystemParam;
 use bevy_platform::sync::Arc;
 use core::marker::PhantomData;
+use std::thread_local;
+
+#[cfg(feature = "web")]
+thread_local! {
+    pub static APP_HOLDER: core::cell::RefCell<Option<bevy_app::App>> = core::cell::RefCell::new(None);
+}
 
 /// Handle that lets an async task request temporary access to an ECS
 /// `SystemParam` or a tuple of them.
@@ -155,6 +161,54 @@ where
         let Some(strong_world) = self.world.0.upgrade() else {
             return Poll::Ready(Err(BridgeError::WorldDropped));
         };
+        #[cfg(feature = "web")]
+        {
+            let a = APP_HOLDER.take();
+            if let Some(mut app) = a {
+                let world = app.world_mut();
+                let Self {
+                    ref system_state,
+                    ref mut bridge_fn,
+                    ..
+                } = *self;
+                // Attempt to acquire the typed `SystemState<P>`.
+                //
+                // We deliberately use `try_lock` rather than blocking. If
+                // another bridge request is currently using the same system
+                // state, we simply yield and let the sync-point driver try again
+                // on a later internal tick.
+                let Some(mut system_state) = system_state.try_lock::<P>(world) else {
+                    return Poll::Pending;
+                };
+
+                if !system_state.meta().is_send() {
+                    return Poll::Ready(Err(BridgeError::SystemParamValidation(
+                        bevy_ecs::system::SystemParamValidationError::invalid::<
+                            bevy_ecs::prelude::NonSend<()>,
+                        >("Cannot have your system be non-send / exclusive"),
+                    )));
+                }
+
+                let param = match system_state.get_mut(world) {
+                    Ok(param) => param,
+                    Err(system_param_validation_error) => {
+                        return Poll::Ready(Err(BridgeError::SystemParamValidation(
+                            system_param_validation_error,
+                        )))
+                    }
+                };
+                // We finally have `P::Item<'w, 's>`, yay!, so consume the stored `FnOnce`, run it,
+                // and complete the future.
+                let out = Poll::Ready(Ok(bridge_fn.take().unwrap()(param)));
+                system_state.apply(world);
+                APP_HOLDER.set(Some(app));
+                out
+            } else {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+        }
+        #[cfg(not(feature = "web"))]
         match strong_world
             .world_scope
             .try_with(|world| {

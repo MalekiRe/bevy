@@ -36,6 +36,8 @@ use bevy_platform::sync::Arc;
 /// The second reason is spoken of prior. Poll may fail to finish for a variety of reasons and
 /// should be given several chances before giving up.
 pub fn async_world_sync_point<SyncPoint: 'static>(world: &mut World) {
+    #[cfg(feature = "web")]
+    return;
     // Derive the stable interned system-set key used to look up requests queued
     // for this exact sync point type.
     let sync_point = async_world_sync_point::<SyncPoint>

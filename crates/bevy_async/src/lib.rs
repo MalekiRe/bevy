@@ -80,6 +80,8 @@ mod plugin;
 mod system_state;
 mod wake_signal;
 
+#[cfg(feature = "web")]
+pub use crate::bridge_future::APP_HOLDER;
 pub use crate::bridge_future::{AsyncSystemState, BridgeError};
 pub use crate::bridge_request::async_world_sync_point;
 pub use crate::plugin::{AsyncPlugin, AsyncTickBudget, AsyncWorld};
