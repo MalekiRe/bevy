@@ -29,7 +29,7 @@ impl<P: SystemParam + 'static> Default for SystemStateCell<P> {
 /// The operations on the typed `SystemState` (initialization, access, and applying deferred
 /// state) all happen through the `impl dyn` implementation below, inside the bridge future
 /// itself.
-pub(crate) trait ErasedSystemStateCell: Send + Sync + core::any::Any + 'static {}
+pub trait ErasedSystemStateCell: Send + Sync + core::any::Any + 'static {}
 
 impl<P: SystemParam + 'static> ErasedSystemStateCell for SystemStateCell<P> {}
 

@@ -21,8 +21,8 @@
 //! # Alternatives
 //!
 //! It is possible to access the ECS **without** this crate (in limited ways). For example, you can
-//! use a channel as demonstrated in the [`async_channel_pattern`] example, or you can simply
-//! [`check_ready`] on the [`Task`] as demonstrated in the [`async_compute`] example.
+//! use a channel as demonstrated in the [`async_channel_pattern`] example, or you can simply call
+//! `check_ready` on the `Task` as demonstrated in the [`async_compute`] example.
 //!
 //! ## Advantages to using this crate
 //!
@@ -44,8 +44,6 @@
 //! [`Local`]: bevy_ecs::system::Local
 //! [`Changed`]: bevy_ecs::query::Changed
 //! [`async_channel_pattern`]: https://github.com/bevyengine/bevy/blob/main/examples/async_tasks/async_channel_pattern.rs
-//! [`check_ready`]: bevy_tasks::futures::check_ready
-//! [`Task`]: bevy_tasks::Task
 //! [`async_compute`]: https://github.com/bevyengine/bevy/blob/main/examples/async_tasks/async_compute.rs
 //! [`QueryState`]: bevy_ecs::query::QueryState
 //! [`SystemParam`]: bevy_ecs::system::SystemParam
@@ -59,17 +57,14 @@
 #[cfg(feature = "std")]
 extern crate std;
 
-// Forbid unsafe_code in every module except the tests, which need some unsafe for Future Pins.
-#[forbid(unsafe_code)]
+extern crate alloc;
+
 mod bridge_future;
-#[forbid(unsafe_code)]
 mod bridge_request;
 #[forbid(unsafe_code)]
 mod plugin;
 #[forbid(unsafe_code)]
 mod system_state;
-#[forbid(unsafe_code)]
-mod wake_signal;
 
 pub use crate::bridge_future::{AsyncSystemState, BridgeError};
 pub use crate::bridge_request::async_world_sync_point;
@@ -100,7 +95,7 @@ mod tests {
     use bevy_ecs::prelude::*;
     use bevy_platform::sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Mutex, PoisonError,
     };
     use bevy_tasks::futures::check_ready;
     use bevy_tasks::AsyncComputeTaskPool;
@@ -225,6 +220,59 @@ mod tests {
     }
 
     #[test]
+    fn can_borrow_from_future() {
+        struct Sync;
+
+        let mut app = App::new();
+        app.add_plugins((
+            AsyncPlugin,
+            ScheduleRunnerPlugin::default(),
+            TaskPoolPlugin::default(),
+        ))
+        .add_systems(Update, async_world_sync_point::<Sync>);
+
+        let system_state = app.world().resource::<AsyncWorld>().system_state();
+
+        #[derive(Resource)]
+        struct Result(Vec<usize>);
+
+        AsyncComputeTaskPool::get()
+            .spawn(async move {
+                let data = (0..1000).map(|i| i * 2).collect::<Vec<_>>();
+
+                system_state
+                    .bridge(Sync, |mut commands: Commands| {
+                        let out_data = data.iter().map(|i| i + 5).collect();
+                        commands.insert_resource(Result(out_data));
+                    })
+                    .await
+                    .unwrap();
+            })
+            .detach();
+
+        let app = Mutex::new(app);
+        run_loops(
+            || {
+                app.lock().unwrap_or_else(PoisonError::into_inner).update();
+            },
+            || {
+                app.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .world()
+                    .contains_resource::<Result>()
+                    .then_some(())
+            },
+        )
+        .unwrap();
+
+        let app = app.into_inner().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(
+            &app.world().resource::<Result>().0,
+            &(0..1000).map(|i| i * 2 + 5).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn different_sync_points_allow_different_tasks() {
         struct Sync1;
         struct Sync2;
@@ -251,6 +299,14 @@ mod tests {
             2
         });
 
+        fn tick() {
+            bevy_tasks::cfg::multi_threaded! {
+                if {} else {
+                    bevy_tasks::tick_global_task_pools_on_main_thread();
+                }
+            }
+        }
+
         assert!(check_ready(&mut task_1).is_none());
         assert!(check_ready(&mut task_2).is_none());
 
@@ -260,6 +316,7 @@ mod tests {
                     app.world_mut()
                         .run_system_cached(async_world_sync_point::<Sync1>)
                         .unwrap();
+                    tick();
                 },
                 || { check_ready(&mut task_1) }
             ),
@@ -274,6 +331,7 @@ mod tests {
                     app.world_mut()
                         .run_system_cached(async_world_sync_point::<Sync2>)
                         .unwrap();
+                    tick();
                 },
                 || { check_ready(&mut task_2) }
             ),

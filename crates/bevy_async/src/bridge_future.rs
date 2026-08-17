@@ -1,37 +1,52 @@
+use crate::bridge_request;
 use crate::bridge_request::BridgeRequest;
 use crate::plugin::AsyncWorld;
 use crate::system_state::{ErasedSystemStateCell, SystemStateCell};
-use crate::wake_signal::WakeSignaler;
-use crate::{bridge_request, wake_signal};
-use bevy_ecs::schedule::{InternedSystemSet, IntoSystemSet, SystemSet};
-use bevy_ecs::system::{SystemParam, SystemParamItem};
-use bevy_platform::sync::Arc;
+use alloc::{borrow::ToOwned, boxed::Box, vec::Vec};
+use bevy_ecs::system::SystemParamValidationError;
+use bevy_ecs::{
+    schedule::{InternedSystemSet, IntoSystemSet, SystemSet},
+    system::{SystemParam, SystemParamItem},
+    world::World,
+};
+use bevy_platform::sync::{Arc, Mutex, PoisonError};
+use core::any::Any;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::mem::MaybeUninit;
 use variadics_please::all_tuples;
 
 /// A `FnOnce` that can be run as a bridge system in order to allow for our bridge function to
 /// get type inference off the closure.
-pub trait AsyncSystemParamFunction<Marker> {
-    type Out;
+pub trait AsyncSystemParamFunction<Marker>: Send {
+    type Out: Send + 'static;
     type Param: SystemParam + 'static;
-    fn run(self, param_value: SystemParamItem<Self::Param>) -> Self::Out;
+
+    /// Converts this function into an Arc with a static lifetime.
+    fn to_runnable(self, system_state: Arc<dyn ErasedSystemStateCell>) -> RunnableBridgeFunction;
 }
 
 impl<Out, Func, F0: SystemParam + 'static> AsyncSystemParamFunction<fn(F0) -> Out> for Func
 where
-    Func: FnOnce(F0) -> Out + FnOnce(SystemParamItem<F0>) -> Out,
-    Out: 'static,
+    Func: FnOnce(F0) -> Out + FnOnce(SystemParamItem<F0>) -> Out + Send,
+    Out: Send + 'static,
 {
     type Out = Out;
     type Param = F0;
 
-    #[inline]
-    fn run(self, param_value: SystemParamItem<Self::Param>) -> Self::Out {
-        fn call_inner<Out, F0>(f: impl FnOnce(F0) -> Out, f0: F0) -> Out {
-            f(f0)
-        }
-        call_inner(self, param_value)
+    fn to_runnable(self, system_state: Arc<dyn ErasedSystemStateCell>) -> RunnableBridgeFunction {
+        RunnableBridgeFunction::from_func(move |world: &mut World| {
+            // Lock the system state. The unwrap is safe since we only try_lock when we have
+            // exclusive world access, so the lock must not be contested.
+            let mut system_state = system_state
+                .try_lock::<F0>(world)
+                .expect("Lock should never be contended since we have exclusive world access");
+
+            let param = system_state.get_mut(world)?;
+            let out = (self)(param);
+            system_state.apply(world);
+
+            Ok(out)
+        })
     }
 }
 
@@ -41,29 +56,36 @@ macro_rules! impl_system_param_function {
             clippy::allow_attributes,
             reason = "This is a tuple-related macro; as such, the lints below may not always apply."
         )]
+        #[allow(
+            non_snake_case,
+            reason = "The names of these variables are provided by the caller, not by us."
+        )]
         impl<Out, Func, $($F: SystemParam + 'static),*> AsyncSystemParamFunction<fn($($F),*) -> Out> for Func
         where
-            Func: FnOnce($($F),*) -> Out + FnOnce($(SystemParamItem<$F>),*) -> Out,
-            Out: 'static,
+            Func: FnOnce($($F),*) -> Out + FnOnce($(SystemParamItem<$F>),*) -> Out + Send,
+            Out: Send + 'static,
         {
             type Out = Out;
             type Param = ($($F,)*);
 
-            #[inline]
-            fn run(self, param_value: SystemParamItem<Self::Param>) -> Self::Out {
-                #[allow(
-                    non_snake_case,
-                    reason = "The names of these variables are provided by the caller, not by us."
-                )]
-                fn call_inner<Out, $($F),*>(f: impl FnOnce($($F),*) -> Out, $($F: $F),*) -> Out {
-                    f($($F),*)
-                }
-                #[allow(
-                    non_snake_case,
-                    reason = "The names of these variables are provided by the caller, not by us."
-                )]
-                let ($($F,)*) = param_value;
-                call_inner(self, $($F),*)
+            fn to_runnable(self, system_state: Arc<dyn ErasedSystemStateCell>) -> RunnableBridgeFunction {
+                RunnableBridgeFunction::from_func(move |world: &mut World| {
+                    // Lock the system state. The unwrap is safe since we only try_lock when we have
+                    // exclusive world access, so the lock must not be contested.
+                    let mut system_state = system_state
+                        .try_lock::<($($F,)*)>(world)
+                        .expect("Lock should never be contended since we have exclusive world access");
+
+                    let ($($F,)*) = system_state.get_mut(world)?;
+
+                    fn call_inner<Out, $($F),*>(f: impl FnOnce($($F),*) -> Out, $($F: $F),*) -> Out {
+                        f($($F),*)
+                    }
+                    let out = call_inner(self, $($F),*);
+                    system_state.apply(world);
+
+                    Ok(out)
+                })
             }
         }
     };
@@ -124,8 +146,7 @@ impl<P: SystemParam + 'static> AsyncSystemState<P> {
             system_state: Arc::new(SystemStateCell::<P>::default()),
             #[cfg(not(feature = "std"))]
             system_state: Arc::from(
-                bevy_platform::prelude::Box::new(SystemStateCell::<P>::default())
-                    as bevy_platform::prelude::Box<dyn ErasedSystemStateCell>,
+                Box::new(SystemStateCell::<P>::default()) as Box<dyn ErasedSystemStateCell>
             ),
         }
     }
@@ -151,15 +172,16 @@ impl<P: SystemParam + 'static> AsyncSystemState<P> {
         // `Send` tasks (an `async fn`'s opaque future trips rust's higher-ranked lifetime checks
         // there).
         BridgeFuture {
-            _p: PhantomData,
             system_set: bridge_request::async_world_sync_point::<SyncPoint>
                 .into_system_set()
                 .intern(),
-            bridge_fn: Some(bridge_fn),
-            wake_signal: None,
-            access_given: None,
-            system_state: self.system_state.clone(),
+            bridge_fn_state: Arc::new(Mutex::new(BridgeFunctionState::Runnable(
+                bridge_fn.to_runnable(self.system_state.clone()),
+            ))),
+            requested: false,
             world: self.world.clone(),
+            _marker_1: PhantomData,
+            _marker_2: PhantomData,
         }
     }
 }
@@ -172,7 +194,7 @@ pub enum BridgeError {
     /// for example trying to access a param that fails Bevy's usual validation like a missing
     /// Resource or using `Single` on something that has 0 or multiple instances.
     #[error(transparent)]
-    SystemParamValidation(bevy_ecs::system::SystemParamValidationError),
+    SystemParamValidation(#[from] SystemParamValidationError),
     /// The world has been dropped, so we should just return.
     #[error("World no longer exists")]
     WorldDropped,
@@ -180,28 +202,33 @@ pub enum BridgeError {
 
 /// Future representing a single in-flight bridging request between our async task and our `World`.
 pub struct BridgeFuture<Func, Marker> {
-    _p: PhantomData<fn() -> Marker>,
     /// Interned system-set key identifying which sync-point queue this future
     /// should be sent to.
     system_set: InternedSystemSet,
-    /// This is the pseudo-system that we try to run when we have access to `World`.
-    /// This is an option just so we can take it out when we run it so we can use `FnOnce`
-    /// instead of `FnMut`, so it's more flexible than true systems.
-    bridge_fn: Option<Func>,
-    /// Wake signal for the currently queued wake cycle, if any.
-    ///
-    /// The future drops this at the end of `poll` which acts as acknowledgement that the wake
-    /// has been handled.
-    wake_signal: Option<WakeSignaler>,
-    /// A flag indicating whether this bridge future has been given access. The bridge function may
-    /// run once this is true. This field is [`Some`] if this request has already been queued.
-    access_given: Option<Arc<AtomicBool>>,
-    /// The [`SystemState`] that is used for ECS access when the bridge function runs.
-    ///
-    /// [`SystemState`]: bevy_ecs::system::SystemState
-    system_state: Arc<dyn ErasedSystemStateCell>,
+    /// This is the pseudo-system that we try to run when we have access to `World` with its current
+    /// state.
+    bridge_fn_state: Arc<Mutex<BridgeFunctionState>>,
+    /// Whether this future has requested to run.
+    requested: bool,
     /// Weak bridge pointer so the loss of the world becomes a clean runtime error.
     world: AsyncWorld,
+    _marker_1: PhantomData<fn() -> Marker>,
+    // Unlike above, we want the future to know that it internally holds a `Func`, so don't use the
+    // "covariant generic" PhantomData above.
+    _marker_2: PhantomData<Func>,
+}
+
+impl<Func, Marker> Drop for BridgeFuture<Func, Marker> {
+    fn drop(&mut self) {
+        // `bridge_fn_state` might have references to the outer scope (in either the bridge function
+        // or its return value). So we must make sure to drop the bridge function or its return
+        // value before this future is cancelled/dropped, despite the fact that the Arc could keep
+        // it alive.
+        *self
+            .bridge_fn_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = BridgeFunctionState::Terminated;
+    }
 }
 
 impl<Func, Marker> Unpin for BridgeFuture<Func, Marker> {}
@@ -214,106 +241,265 @@ where
     type Output = Result<Func::Out, BridgeError>;
 
     fn poll(
-        mut self: core::pin::Pin<&mut Self>,
+        self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         use core::task::Poll;
-
-        // Make sure no one is polling this future after it's complete.
-        debug_assert!(self.bridge_fn.is_some());
+        // Unpin, because we don't care about pinning.
+        let this = self.get_mut();
 
         // Try to gain a strong reference to the bridge. If this fails, the world is gone,
         // so further access is impossible.
-        let Some(strong_world) = self.world.0.upgrade() else {
-            // Make sure we handle the wake signal if we got one.
-            let _ = self.wake_signal.take();
+        let Some(strong_world) = this.world.0.upgrade() else {
             return Poll::Ready(Err(BridgeError::WorldDropped));
         };
 
-        match self.access_given.as_ref() {
-            None => {
-                debug_assert!(self.wake_signal.is_none());
-                // No world is currently exposed. That means we are being polled
-                // outside the `async_world_sync_point`, so we cannot access ECS yet.
-                //
-                // Instead, enqueue ourselves to be revisited when the matching
-                // sync-point system runs.
-                let (wake_signal, wake_waiter) = wake_signal::pair();
-                // Store the wake_signal locally so dropping it at the end of the next
-                // poll acknowledges the wake.
-                self.wake_signal.replace(wake_signal);
-                let access_given = Arc::new(AtomicBool::new(false));
-                self.access_given.replace(access_given.clone());
-                // Queue the request under this future's target sync point.
-                //
-                // The queued payload carries the following!
-                // 1. The task's waker, so the sync-point driver can wake it.
-                // 2. The wake handshake signal, so the driver can wait until the wake has actually
-                // been processed.
-                strong_world
-                    .bridge_requests
-                    .try_send(
-                        &self.system_set,
-                        BridgeRequest {
-                            waker: cx.waker().clone(),
-                            wake_waiter,
-                            access_given,
-                        },
-                    )
-                    .ok()
-                    .unwrap();
-                Poll::Pending
+        let mut bridge_fn = this
+            .bridge_fn_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // Make sure no one is polling this future after it's complete.
+        match &*bridge_fn {
+            BridgeFunctionState::Runnable(_) | BridgeFunctionState::Finished(_) => {}
+            // We only ever set Terminated if we've polled a finished function, or if we've
+            // cancelled the future (which clearly hasn't happened since we haven't dropped this
+            // future). Panic here to make sure no one is polling this future after it's complete.
+            BridgeFunctionState::Terminated => {
+                panic!("polling a BridgeFuture that has already completed")
             }
-            Some(access_given) => {
-                if !access_given.load(Ordering::Relaxed) {
-                    // Despite the fact that we've been polled, we haven't been given access. So
-                    // ignore the poll and keep pending.
-                    return Poll::Pending;
+        }
+
+        if !this.requested {
+            this.requested = true;
+            strong_world
+                .bridge_requests
+                .try_send(
+                    &this.system_set,
+                    BridgeRequest {
+                        bridge_fn: this.bridge_fn_state.clone(),
+                        waker: cx.waker().clone(),
+                    },
+                )
+                .ok()
+                .unwrap();
+            Poll::Pending
+        } else {
+            // Hokey-pokey the bridge function.
+            match core::mem::replace(&mut *bridge_fn, BridgeFunctionState::Terminated) {
+                f @ BridgeFunctionState::Runnable(_) => {
+                    // Put the function back if it's still runnable.
+                    *bridge_fn = f;
+                    Poll::Pending
                 }
-
-                // If we were previously woken by the sync-point driver, we will have a
-                // `WakeSignaler` stored here.
-                //
-                // Dropping that signal at the end of this poll acts as the
-                // acknowledgement that yes, this wake was observed and this task has
-                // attempted its run, you may release the waiting on the other side.
-                let _drop_at_end_of_scope = self
-                    .wake_signal
-                    .take()
-                    .expect("future is only polled once, and we were woken after queuing");
-
-                strong_world
-                    .world_scope
-                    .try_with(|world| {
-                        let Self {
-                            ref system_state,
-                            ref mut bridge_fn,
-                            ..
-                        } = *self;
-                        // Lock the system state. The unwrap is safe since we only try_lock when we have
-                        // exclusive world access, so the lock must not be contested.
-                        let mut system_state = system_state.try_lock::<Func::Param>(world).expect(
-                            "Lock should never be contended since we have exclusive world access",
-                        );
-
-                        let param = match system_state.get_mut(world) {
-                            Ok(param) => param,
-                            Err(system_param_validation_error) => {
-                                return Poll::Ready(Err(BridgeError::SystemParamValidation(
-                                    system_param_validation_error,
-                                )));
-                            }
-                        };
-                        // We finally have `P::Item<'w, 's>`, yay!, so consume the stored `FnOnce`, run it,
-                        // and complete the future.
-                        let out = bridge_fn.take().unwrap().run(param);
-                        // Apply any deferred state (e.g. `Commands`) back into the world.
-                        system_state.apply(world);
-                        Poll::Ready(Ok(out))
-                    })
-                    .ok()
-                    .expect("we have world access since we queued and were then woken")
+                BridgeFunctionState::Finished(value) => {
+                    let value = value?;
+                    // Unwrap is safe because BridgeFunctionState guarantees that it always holds
+                    // the return value of the function.
+                    let value = *value.downcast::<Func::Out>().unwrap();
+                    Poll::Ready(Ok(value))
+                }
+                // Handled above.
+                BridgeFunctionState::Terminated => unreachable!(),
             }
         }
     }
+}
+
+/// A function that can be run for async bridge functions.
+pub struct RunnableBridgeFunction(
+    Box<dyn FnOnce(&mut World) -> Result<Box<dyn Any + Send>, SystemParamValidationError> + Send>,
+);
+
+impl RunnableBridgeFunction {
+    /// Creates an instance storing `func` that can later be run.
+    fn from_func<
+        Out: Send + 'static,
+        F: FnOnce(&mut World) -> Result<Out, SystemParamValidationError> + Send,
+    >(
+        func: F,
+    ) -> Self {
+        let func = SmuggledValue::new(func);
+        Self(Box::new(move |world: &mut World| {
+            #[expect(
+                unsafe_code,
+                reason = "we need to be able to smuggle the lifetimes into this closure, otherwise we can't run this future on a different thread"
+            )]
+            // SAFETY: We stored the original `func` inside the SmuggledValue, which has type `F`.
+            let func = unsafe { func.smuggle::<F>() };
+            let out = func(world)?;
+            Ok(Box::new(out))
+        }))
+    }
+
+    /// Runs this function on the given world.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the references contained within this function are still valid.
+    #[expect(
+        unsafe_code,
+        reason = "since we've smuggled references into the Box<dyn FnOnce>, we need to be careful in how this function gets called"
+    )]
+    pub(crate) unsafe fn run(
+        self,
+        world: &mut World,
+    ) -> Result<Box<dyn Any + Send>, SystemParamValidationError> {
+        // SAFETY: The caller guarantees that the references within this function are still valid.
+        self.0(world)
+    }
+}
+
+/// The state of the bridge function's execution.
+pub(crate) enum BridgeFunctionState {
+    /// The function is runnable with the given bridge function.
+    Runnable(RunnableBridgeFunction),
+    /// The function has already ran, and is now storing its return value.
+    ///
+    /// This is guaranteed to be the return value of the function from the [`Self::Runnable`] state.
+    Finished(Result<Box<dyn Any + Send>, SystemParamValidationError>),
+    /// The function is in its terminating state.
+    ///
+    /// This either means the function ran and its return value was consumed, or execution was
+    /// cancelled before the function ran.
+    Terminated,
+}
+
+impl BridgeFunctionState {
+    /// Runs the bridge function (if it is present) and stores the finished value.
+    ///
+    /// Panics if the state is [`Self::Finished`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the references contained within this function are still valid
+    /// (unless the state is [`Self::Terminated`]).
+    #[expect(
+        unsafe_code,
+        reason = "we can't ensure that the references are safe based on only this type - it is a structural relationship in how this type is used"
+    )]
+    pub(crate) unsafe fn run(&mut self, world: &mut World) {
+        match core::mem::replace(self, Self::Terminated) {
+            Self::Runnable(function) => {
+                // SAFETY: The safety requirements of this function are the same as `run`.
+                let out = unsafe { function.run(world) };
+                *self = Self::Finished(out);
+            }
+            // We only run functions once, and always on Runnable functions.
+            Self::Finished(_) => unreachable!(),
+            Self::Terminated => {}
+        }
+    }
+}
+
+/// A value that has been stored as a raw set of bytes with no type information.
+///
+/// This is effectively a `Box<dyn Any>`, except without the constraint that the value is 'static.
+/// As a consequence, this type does not store any type information, making it the user's job to
+/// ensure the type stored and the type extracted are the **exact** same.
+pub(crate) struct SmuggledValue {
+    /// The data for the value being stored.
+    ///
+    /// Note: there's no guarantee that this type is correctly aligned, so casting it directly to
+    /// the inner type is invalid.
+    data: Vec<MaybeUninit<u8>>,
+    /// The function to call when dropping this type.
+    ///
+    /// This allows us to drop the underlying value even after the type information is gone.
+    drop_fn: fn(&[MaybeUninit<u8>]),
+}
+
+impl SmuggledValue {
+    /// Creates a new instance containing `value`.
+    fn new<T>(value: T) -> Self {
+        #[expect(
+            unsafe_code,
+            reason = "we need to erase the type, but we still need to store its bytes"
+        )]
+        // NOTE: Because we're copying through a MaybeUninit, we preserve pointer-provenance (based
+        // on https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#validity).
+        // SAFETY: We know we are pointing to valid memory (since we are pointing to a valid
+        // `value`), and we know there are at least size_of::<T>() bytes in a `T`.
+        let value_as_bytes = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::from_ref(&value).cast::<MaybeUninit<u8>>(),
+                size_of::<T>(),
+            )
+        }
+        .to_owned();
+
+        // Forget the value, Self is now responsible for dropping the value.
+        core::mem::forget(value);
+
+        Self {
+            data: value_as_bytes,
+            drop_fn: |value_as_bytes: &[MaybeUninit<u8>]| {
+                // Convert the bytes into a value, and then allow it to be dropped.
+
+                #[expect(
+                    unsafe_code,
+                    reason = "we've erased the type, so we need to 'recover' the type here"
+                )]
+                // SAFETY: The bytes make up a valid `T` since we copied those bytes on construction
+                // from a valid `T` and the caller guarantees these are the same `T`.
+                let _ = unsafe { bytes_to_value::<T>(value_as_bytes) };
+            },
+        }
+    }
+
+    /// Constructs the provided type from the previously stored bytes.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `T` was previously stored in this value.
+    #[expect(
+        unsafe_code,
+        reason = "since we've lost the type information, we have to rely on the user calling this function with the correct type, which is unsafe"
+    )]
+    unsafe fn smuggle<T>(mut self) -> T {
+        // Clear the drop_fn since we no longer own the thing being dropped.
+        self.drop_fn = |_: &[MaybeUninit<u8>]| {};
+
+        // SAFETY: The bytes make up a valid `T` since we copied those bytes on construction from a
+        // valid `T` and the caller guarantees these are the same `T`. We also know this value
+        // hasn't been dropped, since we only drop when self drops (which hasn't happened
+        // obviously).
+        unsafe { bytes_to_value(self.data.as_ref()) }
+    }
+}
+
+impl Drop for SmuggledValue {
+    fn drop(&mut self) {
+        (self.drop_fn)(self.data.as_ref());
+    }
+}
+
+/// Converts a set of raw bytes into a value of type T.
+///
+/// # Safety
+///
+/// The caller must ensure that `bytes` contains bytes that actually makes up a valid T (but does
+/// not have to be a valid T, e.g., `bytes` are not aligned). The value must also not have been
+/// dropped yet.
+#[expect(
+    unsafe_code,
+    reason = "we don't know whether the bytes are actually a T, so we need unsafe so that users promise that is the case"
+)]
+unsafe fn bytes_to_value<T>(bytes: &[MaybeUninit<u8>]) -> T {
+    debug_assert_eq!(bytes.len(), size_of::<T>());
+
+    let mut return_value: MaybeUninit<T> = MaybeUninit::uninit();
+    // SAFETY: We know this is a valid pointer to a slice of bytes, and we know there are at least
+    // size_of::<T>() bytes in a `T`.
+    let return_value_as_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            return_value.as_mut_ptr().cast::<MaybeUninit<u8>>(),
+            size_of::<T>(),
+        )
+    };
+
+    return_value_as_bytes.copy_from_slice(bytes);
+
+    // SAFETY: The caller ensures that `bytes` holds bytes that actually make a valid `T`, and we
+    // copied those bytes into `return_value` (meaning that the bytes are correctly aligned).
+    unsafe { return_value.assume_init() }
 }
